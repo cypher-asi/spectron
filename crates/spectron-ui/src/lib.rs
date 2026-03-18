@@ -7,7 +7,7 @@ pub mod layout;
 
 use std::collections::{HashMap, HashSet};
 
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use spectron_core::{
     CrateId, CrateInfo, CrateType, FileId, FileInfo, ModuleId, ModuleInfo, ProjectInfo,
     Symbol, SymbolId, SymbolKind,
@@ -27,6 +27,86 @@ const GREEN: Color32 = Color32::from_rgb(82, 242, 132); // #52F284
 const PURPLE: Color32 = Color32::from_rgb(182, 83, 249); // #B653F9
 const YELLOW_GREEN: Color32 = Color32::from_rgb(171, 240, 18); // #ABF012
 const DIM: Color32 = Color32::from_rgb(150, 150, 150);
+const BORDER: Color32 = Color32::from_rgb(40, 40, 40);
+
+const TITLEBAR_HEIGHT: f32 = 36.0;
+const WINDOW_BTN_SIZE: f32 = 28.0;
+const WINDOW_ICON_SIZE: f32 = 10.0;
+const WINDOW_ICON_STROKE: f32 = 1.5;
+
+// ---------------------------------------------------------------------------
+// Window control buttons
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+enum WindowControl {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+fn window_control_button(ui: &mut Ui, control: WindowControl) -> egui::Response {
+    let size = Vec2::splat(WINDOW_BTN_SIZE);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        let painter = ui.painter();
+
+        if hovered {
+            let bg = match control {
+                WindowControl::Close => Color32::from_rgb(200, 50, 50),
+                _ => Color32::from_rgb(45, 45, 45),
+            };
+            painter.rect_filled(rect, 4.0, bg);
+        }
+
+        let icon_color = if hovered && control == WindowControl::Close {
+            Color32::WHITE
+        } else if hovered {
+            Color32::from_rgb(200, 200, 200)
+        } else {
+            Color32::from_rgb(120, 120, 120)
+        };
+        let stroke = Stroke::new(WINDOW_ICON_STROKE, icon_color);
+        let center = rect.center();
+        let half = WINDOW_ICON_SIZE / 2.0;
+
+        match control {
+            WindowControl::Minimize => {
+                painter.line_segment(
+                    [
+                        Pos2::new(center.x - half, center.y),
+                        Pos2::new(center.x + half, center.y),
+                    ],
+                    stroke,
+                );
+            }
+            WindowControl::Maximize => {
+                let sq = Rect::from_center_size(center, Vec2::splat(WINDOW_ICON_SIZE));
+                painter.rect_stroke(sq, 0.0, stroke);
+            }
+            WindowControl::Close => {
+                painter.line_segment(
+                    [
+                        Pos2::new(center.x - half, center.y - half),
+                        Pos2::new(center.x + half, center.y + half),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(center.x + half, center.y - half),
+                        Pos2::new(center.x - half, center.y + half),
+                    ],
+                    stroke,
+                );
+            }
+        }
+    }
+
+    response
+}
 
 // ---------------------------------------------------------------------------
 // ProjectData
@@ -124,43 +204,80 @@ struct SpectronApp {
 
 impl eframe::App for SpectronApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // ---- Top header ----
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let kind = if self.data.project.is_workspace {
-                    "workspace"
-                } else {
-                    "crate"
-                };
-                if ui
-                    .link(RichText::new(&self.data.project.name).heading().strong())
-                    .clicked()
-                {
-                    self.view_mode = ViewMode::Overview;
-                    self.inspector_target = None;
-                }
-                ui.label(RichText::new(format!("({})", kind)).color(DIM));
-                ui.add_space(12.0);
-                ui.separator();
-                ui.label(format!("{} crates", self.data.crates.len()));
-                ui.separator();
-                ui.label(format!("{} modules", self.data.modules.len()));
-                ui.separator();
-                ui.label(format!("{} files", self.data.files.len()));
-                ui.separator();
-                ui.label(format!(
-                    "{} symbols",
-                    self.data.symbols.len()
-                ));
-                ui.separator();
-                ui.label(format!(
-                    "{} lines",
-                    format_number(self.data.total_lines)
-                ));
+        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+
+        // ---- Custom titlebar ----
+        let titlebar_response = egui::TopBottomPanel::top("titlebar")
+            .exact_height(TITLEBAR_HEIGHT)
+            .frame(egui::Frame::none().fill(Color32::BLACK).inner_margin(egui::Margin {
+                left: 14.0,
+                right: 6.0,
+                top: 0.0,
+                bottom: 0.0,
+            }))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.label(RichText::new("SPECTRON").strong().size(13.0).color(Color32::WHITE));
+                    ui.add_space(8.0);
+
+                    let kind = if self.data.project.is_workspace { "workspace" } else { "crate" };
+                    if ui
+                        .link(RichText::new(&self.data.project.name).size(12.0).color(DIM))
+                        .clicked()
+                    {
+                        self.view_mode = ViewMode::Overview;
+                        self.inspector_target = None;
+                    }
+                    ui.label(RichText::new(format!("({})", kind)).size(11.0).color(Color32::from_rgb(80, 80, 80)));
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("\u{2022}").size(8.0).color(Color32::from_rgb(50, 50, 50)));
+                    ui.add_space(4.0);
+
+                    let stats = format!(
+                        "{} crates  \u{00B7}  {} modules  \u{00B7}  {} files  \u{00B7}  {} symbols  \u{00B7}  {} lines",
+                        self.data.crates.len(),
+                        self.data.modules.len(),
+                        self.data.files.len(),
+                        self.data.symbols.len(),
+                        format_number(self.data.total_lines),
+                    );
+                    ui.label(RichText::new(stats).size(11.0).color(Color32::from_rgb(70, 70, 70)));
+
+                    // Window control buttons on the right
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(2.0);
+                        if window_control_button(ui, WindowControl::Close).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if window_control_button(ui, WindowControl::Maximize).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                        }
+                        if window_control_button(ui, WindowControl::Minimize).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                    });
+                });
             });
-            ui.add_space(6.0);
-        });
+
+        // Paint bottom border on the titlebar
+        let titlebar_rect = titlebar_response.response.rect;
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        painter.line_segment(
+            [
+                Pos2::new(titlebar_rect.left(), titlebar_rect.bottom()),
+                Pos2::new(titlebar_rect.right(), titlebar_rect.bottom()),
+            ],
+            Stroke::new(1.0, BORDER),
+        );
+
+        // Drag & double-click on titlebar
+        let titlebar_resp = titlebar_response.response;
+        if titlebar_resp.is_pointer_button_down_on() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if titlebar_resp.double_clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+        }
 
         // ---- Right panel: filter panel + inspector ----
         let mut nav_to_symbol: Option<SymbolId> = None;
@@ -881,6 +998,7 @@ pub fn run(data: ProjectData) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
+            .with_decorations(false)
             .with_inner_size([1400.0, 900.0])
             .with_icon(egui::IconData::default()),
         ..Default::default()
