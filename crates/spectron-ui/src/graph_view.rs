@@ -107,6 +107,11 @@ pub struct GraphViewState {
     label_cache: HashMap<NodeIndex, String>,
     /// Cluster rectangles produced by the Grouped layout (empty for other layouts).
     pub cluster_rects: Vec<crate::layout::ClusterRect>,
+    /// Set of NodeIndex values that participate in dependency cycles.
+    /// Populated externally; used to highlight cycle edges and node borders.
+    pub cycle_nodes: HashSet<NodeIndex>,
+    /// Per-node coupling score for heatmap colouring (0.0 = cool, higher = hot).
+    pub coupling_heatmap: HashMap<NodeIndex, f32>,
 }
 
 /// Layout algorithm selector.
@@ -188,6 +193,8 @@ fn default_state(edge_filters: HashMap<RelationshipKind, bool>) -> GraphViewStat
         grid: SpatialGrid::new(),
         label_cache: HashMap::new(),
         cluster_rects: Vec::new(),
+        cycle_nodes: HashSet::new(),
+        coupling_heatmap: HashMap::new(),
     }
 }
 
@@ -681,12 +688,20 @@ pub fn show_canvas(
         );
         let edge_alpha = src_alpha.min(tgt_alpha);
 
-        let base_color = edge_color(&edge.kind);
+        let both_in_cycle = state.cycle_nodes.contains(&src)
+            && state.cycle_nodes.contains(&tgt);
+        let base_color = if both_in_cycle {
+            Color32::from_rgb(255, 60, 60)
+        } else {
+            edge_color(&edge.kind)
+        };
         let weight_alpha = (60.0 + (edge.weight.min(5.0) / 5.0) * 160.0) / 255.0;
         let final_alpha = edge_alpha * weight_alpha;
         let color = with_alpha(base_color, final_alpha);
 
-        let base_width = if edge.kind == RelationshipKind::Contains {
+        let base_width = if both_in_cycle {
+            2.5
+        } else if edge.kind == RelationshipKind::Contains {
             0.5
         } else {
             1.0 + edge.weight.ln().max(0.0) * 0.5
@@ -785,17 +800,34 @@ pub fn show_canvas(
 
                 let node = &graph[node_idx];
                 let radius = node_radius(node, data) * zoom;
-                let base_color = node_color(node, data);
+                let base_color = if let Some(&coupling) = state.coupling_heatmap.get(&node_idx) {
+                    coupling_to_color(coupling)
+                } else {
+                    node_color(node, data)
+                };
                 let is_hovered = state.hovered == Some(node_idx);
                 let is_selected = state.selected == Some(node_idx);
                 let is_pinned = state.pinned_nodes.contains(&node_idx);
                 let is_entry =
                     matches!(node, GraphNode::Symbol(sid) if entrypoints.contains(sid));
+                let is_in_cycle = state.cycle_nodes.contains(&node_idx);
 
                 let alpha = compute_node_alpha(
                     node_idx, graph, state, data, entrypoints, &hover_neighbors, &focus_set,
                 );
 
+                if is_in_cycle {
+                    painter.circle_filled(
+                        screen_pos,
+                        radius + 5.0 * zoom,
+                        with_alpha(Color32::from_rgb(255, 50, 50), alpha * 0.25),
+                    );
+                    painter.circle_stroke(
+                        screen_pos,
+                        radius + 3.0 * zoom,
+                        Stroke::new(2.0 * zoom.sqrt(), with_alpha(Color32::from_rgb(255, 60, 60), alpha)),
+                    );
+                }
                 if is_entry {
                     painter.circle_filled(
                         screen_pos,
@@ -921,6 +953,16 @@ fn node_color(node: &GraphNode, data: &ProjectData) -> Color32 {
             None => DEFAULT_NODE_COLOR,
         },
     }
+}
+
+/// Map a coupling score to a blue-to-red heatmap colour.
+/// 0 = cool blue, 10 = neutral, 20+ = hot red.
+fn coupling_to_color(score: f32) -> Color32 {
+    let t = (score / 25.0).clamp(0.0, 1.0);
+    let r = (t * 255.0) as u8;
+    let b = ((1.0 - t) * 200.0) as u8;
+    let g = ((1.0 - (2.0 * t - 1.0).abs()) * 100.0) as u8;
+    Color32::from_rgb(r, g, b)
 }
 
 fn edge_color(kind: &RelationshipKind) -> Color32 {

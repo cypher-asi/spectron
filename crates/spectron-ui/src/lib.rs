@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use spectron_core::{
-    CrateId, CrateInfo, CrateType, FileId, FileInfo, ModuleId, ModuleInfo, ProjectInfo,
-    Symbol, SymbolId, SymbolKind,
+    CrateId, CrateInfo, CrateType, FileId, FileInfo, GraphNode, ModuleId, ModuleInfo,
+    ProjectInfo, Symbol, SymbolId, SymbolKind,
 };
 use spectron_graph::GraphSet;
 
@@ -1086,6 +1086,44 @@ pub fn run(data: ProjectData) -> anyhow::Result<()> {
             let mut call_state = graph_view::GraphViewState::new_call();
             structure_state.init_crate_filters(&crate_ids);
             call_state.init_crate_filters(&crate_ids);
+
+            // Populate cycle overlay data from structural analysis.
+            {
+                let module_sub = spectron_graph::extract_module_subgraph(
+                    &data.graph_set.structure_graph,
+                );
+                let sccs = spectron_graph::find_cycles(&module_sub);
+                // Map module-subgraph NodeIndices back to structure-graph NodeIndices.
+                let mut cycle_module_ids = std::collections::HashSet::new();
+                for scc in &sccs {
+                    for &ni in scc {
+                        match &module_sub[ni] {
+                            GraphNode::Module(mid) => { cycle_module_ids.insert(*mid); }
+                            GraphNode::Crate(cid) => {
+                                // Find structure-graph NodeIndex for this crate.
+                                if let Some(&sni) = data.graph_set.index.crate_nodes.get(cid) {
+                                    structure_state.cycle_nodes.insert(sni);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                for mid in &cycle_module_ids {
+                    if let Some(&sni) = data.graph_set.index.module_nodes.get(mid) {
+                        structure_state.cycle_nodes.insert(sni);
+                    }
+                }
+
+                // Populate coupling heatmap from module metrics.
+                for (mod_id, mm) in &data.analysis.module_metrics {
+                    if let Some(coupling) = mm.coupling_score {
+                        if let Some(&ni) = data.graph_set.index.module_nodes.get(mod_id) {
+                            structure_state.coupling_heatmap.insert(ni, coupling);
+                        }
+                    }
+                }
+            }
             Ok(Box::new(SpectronApp {
                 data,
                 view_mode: ViewMode::Architecture,
