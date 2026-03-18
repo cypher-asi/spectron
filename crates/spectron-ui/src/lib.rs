@@ -331,16 +331,18 @@ impl eframe::App for SpectronApp {
             Stroke::new(1.0, BORDER),
         );
 
-        // Drag & double-click on titlebar (only outside button area)
+        // Drag & double-click on titlebar (only outside button area).
+        // Double-click is checked first. Drag only fires once the pointer
+        // has actually moved (delta != 0) so a quick double-click isn't
+        // swallowed by the OS drag capture.
         if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
             let in_titlebar = titlebar_rect.contains(pos);
             let in_buttons = buttons_rect.contains(pos);
             if in_titlebar && !in_buttons {
-                if ctx.input(|i| i.pointer.any_pressed()) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
                 if ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                } else if ctx.input(|i| i.pointer.any_down() && i.pointer.delta() != Vec2::ZERO) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
             }
         }
