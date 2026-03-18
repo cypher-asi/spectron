@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use spectron_core::{ModuleId, ModuleMetrics, SecurityReport, SymbolId, SymbolMetrics};
 
+use crate::structural::StructuralReport;
+
 // ---------------------------------------------------------------------------
 // AnalysisOutput
 // ---------------------------------------------------------------------------
@@ -11,11 +13,11 @@ use spectron_core::{ModuleId, ModuleMetrics, SecurityReport, SymbolId, SymbolMet
 /// The complete output of the analysis engine.
 ///
 /// Contains per-symbol metrics, per-module metrics, a security report,
-/// detected entrypoints, and complexity flags that highlight areas of concern.
+/// detected entrypoints, complexity flags, and structural findings.
 pub struct AnalysisOutput {
     /// Per-symbol metrics (complexity, line count, fan-in/out, etc.).
     pub symbol_metrics: HashMap<SymbolId, SymbolMetrics>,
-    /// Per-module metrics (symbol count, line count, fan-in/out).
+    /// Per-module metrics (symbol count, line count, fan-in/out, coupling).
     pub module_metrics: HashMap<ModuleId, ModuleMetrics>,
     /// Security report with all detected indicators.
     pub security_report: SecurityReport,
@@ -23,6 +25,8 @@ pub struct AnalysisOutput {
     pub entrypoints: Vec<SymbolId>,
     /// Complexity flags for symbols and modules exceeding thresholds.
     pub complexity_flags: Vec<ComplexityFlag>,
+    /// Structural/architectural analysis report (cycles, god modules, etc.).
+    pub structural_report: StructuralReport,
 }
 
 // ---------------------------------------------------------------------------

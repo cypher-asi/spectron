@@ -392,12 +392,12 @@ pub fn generate_complexity_flags(
 // Top-level analysis
 // ---------------------------------------------------------------------------
 
-/// Run all complexity metric analysis passes on the graph set.
+/// Run all analysis passes on the graph set.
 ///
-/// This is the main entry point for complexity metric computation. It
-/// computes symbol metrics, module metrics, generates complexity flags,
-/// and detects entrypoints. Security report is initialized as empty
-/// (populated by other analysis passes).
+/// This is the main entry point for analysis. It computes symbol metrics,
+/// module metrics (including coupling), generates complexity flags, detects
+/// entrypoints, runs security indicator detection, and performs structural
+/// analysis (cycles, god modules, API surface).
 pub fn analyze(
     graph_set: &GraphSet,
     symbols: &HashMap<SymbolId, Symbol>,
@@ -409,7 +409,7 @@ pub fn analyze(
         &graph_set.call_graph_data,
     );
 
-    let module_metrics = compute_module_metrics(
+    let mut module_metrics = compute_module_metrics(
         modules,
         symbols,
         &symbol_metrics,
@@ -430,12 +430,20 @@ pub fn analyze(
         &graph_set.call_graph_data,
     );
 
+    let structural_report = crate::structural::analyze(
+        graph_set,
+        &mut module_metrics,
+        modules,
+        symbols,
+    );
+
     AnalysisOutput {
         symbol_metrics,
         module_metrics,
         security_report,
         entrypoints,
         complexity_flags,
+        structural_report,
     }
 }
 
