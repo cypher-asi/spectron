@@ -1,10 +1,12 @@
-//! Fruchterman-Reingold force-directed layout with Barnes-Hut O(n log n) repulsion.
+//! Layout algorithms: force-directed (Fruchterman-Reingold), layered (Sugiyama),
+//! and grouped (cluster-by-parent).
 
 use std::collections::{HashMap, HashSet};
 
 use egui::Vec2;
 use petgraph::graph::NodeIndex;
-use spectron_core::ArchGraph;
+use petgraph::visit::EdgeRef;
+use spectron_core::{ArchGraph, GraphNode, RelationshipKind};
 
 const THETA: f32 = 0.8;
 const MAX_ITERATIONS: usize = 300;
@@ -595,4 +597,135 @@ pub fn compute_layered_layout(
     }
 
     positions
+}
+
+// ---------------------------------------------------------------------------
+// Grouped (cluster-by-parent) layout
+// ---------------------------------------------------------------------------
+
+/// Cluster padding within each group.
+const CLUSTER_INNER_PAD: f32 = 30.0;
+/// Padding between clusters.
+const CLUSTER_GAP: f32 = 80.0;
+
+/// Compute a grouped layout that clusters nodes by their parent
+/// (crate or module) based on `Contains` edges.
+///
+/// Nodes without a parent in the visible set are placed in a special
+/// "ungrouped" cluster. Within each cluster, nodes are arranged in a
+/// grid. Clusters themselves are arranged in a row-wrapped layout.
+///
+/// This layout is deterministic: same graph always produces the same
+/// positions.
+pub fn compute_grouped_layout(
+    graph: &ArchGraph,
+    width: f32,
+    _height: f32,
+    visible: &HashSet<NodeIndex>,
+) -> (HashMap<NodeIndex, Vec2>, Vec<ClusterRect>) {
+    let mut nodes: Vec<NodeIndex> = graph
+        .node_indices()
+        .filter(|n| visible.contains(n))
+        .collect();
+    nodes.sort();
+
+    if nodes.is_empty() {
+        return (HashMap::new(), Vec::new());
+    }
+
+    let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
+
+    // Build parent mapping: child -> parent via incoming Contains edge.
+    let mut parent_of: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+    for &n in &nodes {
+        for edge in graph.edges_directed(n, petgraph::Direction::Incoming) {
+            if edge.weight().kind == RelationshipKind::Contains && node_set.contains(&edge.source()) {
+                parent_of.insert(n, edge.source());
+                break;
+            }
+        }
+    }
+
+    // Group nodes by their parent. Roots (no parent) are cluster heads.
+    // Nodes whose parent is also visible are grouped under that parent.
+    let mut clusters: HashMap<Option<NodeIndex>, Vec<NodeIndex>> = HashMap::new();
+    for &n in &nodes {
+        let group_key = parent_of.get(&n).copied();
+        clusters.entry(group_key).or_default().push(n);
+    }
+
+    // Sort cluster keys deterministically (None first, then by NodeIndex).
+    let mut cluster_keys: Vec<Option<NodeIndex>> = clusters.keys().copied().collect();
+    cluster_keys.sort_by_key(|k| k.map(|ni| ni.index()).unwrap_or(0));
+
+    // Layout each cluster, then arrange clusters in a row-wrapped grid.
+    let margin = width * 0.04;
+    let max_row_width = width - 2.0 * margin;
+
+    let node_size = 24.0_f32;
+    let mut positions = HashMap::new();
+    let mut cluster_rects: Vec<ClusterRect> = Vec::new();
+    let mut cursor_x = margin;
+    let mut cursor_y = margin;
+    let mut row_max_height = 0.0_f32;
+
+    for key in &cluster_keys {
+        let members = &clusters[key];
+        let count = members.len();
+        let cols = (count as f32).sqrt().ceil().max(1.0) as usize;
+        let rows = (count + cols - 1) / cols;
+
+        let cluster_w = cols as f32 * (node_size + CLUSTER_INNER_PAD) + CLUSTER_INNER_PAD;
+        let cluster_h = rows as f32 * (node_size + CLUSTER_INNER_PAD) + CLUSTER_INNER_PAD;
+
+        // Wrap to next row if this cluster doesn't fit.
+        if cursor_x + cluster_w > max_row_width + margin && cursor_x > margin + 1.0 {
+            cursor_x = margin;
+            cursor_y += row_max_height + CLUSTER_GAP;
+            row_max_height = 0.0;
+        }
+
+        // Record the cluster rectangle for rendering.
+        let label = key
+            .and_then(|ni| {
+                match &graph[ni] {
+                    GraphNode::Crate(id) => Some(format!("Crate({})", id)),
+                    GraphNode::Module(id) => Some(format!("Module({})", id)),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| "ungrouped".to_string());
+
+        cluster_rects.push(ClusterRect {
+            x: cursor_x,
+            y: cursor_y,
+            w: cluster_w,
+            h: cluster_h,
+            label,
+        });
+
+        // Place members in a grid within the cluster.
+        for (i, &n) in members.iter().enumerate() {
+            let col = i % cols;
+            let row = i / cols;
+            let x = cursor_x + CLUSTER_INNER_PAD + col as f32 * (node_size + CLUSTER_INNER_PAD);
+            let y = cursor_y + CLUSTER_INNER_PAD + row as f32 * (node_size + CLUSTER_INNER_PAD);
+            positions.insert(n, Vec2::new(x, y));
+        }
+
+        cursor_x += cluster_w + CLUSTER_GAP;
+        row_max_height = row_max_height.max(cluster_h);
+    }
+
+    (positions, cluster_rects)
+}
+
+/// Rectangle describing a cluster boundary for rendering.
+#[derive(Clone, Debug)]
+pub struct ClusterRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub label: String,
 }

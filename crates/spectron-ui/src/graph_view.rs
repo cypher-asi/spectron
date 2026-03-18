@@ -105,6 +105,8 @@ pub struct GraphViewState {
     layout: Option<crate::layout::LayoutState>,
     grid: SpatialGrid,
     label_cache: HashMap<NodeIndex, String>,
+    /// Cluster rectangles produced by the Grouped layout (empty for other layouts).
+    pub cluster_rects: Vec<crate::layout::ClusterRect>,
 }
 
 /// Layout algorithm selector.
@@ -112,6 +114,7 @@ pub struct GraphViewState {
 pub enum LayoutAlgorithm {
     ForceDirected,
     Layered,
+    Grouped,
 }
 
 /// Active filter preset (used for visual feedback in the filter panel).
@@ -184,11 +187,13 @@ fn default_state(edge_filters: HashMap<RelationshipKind, bool>) -> GraphViewStat
         layout: None,
         grid: SpatialGrid::new(),
         label_cache: HashMap::new(),
+        cluster_rects: Vec::new(),
     }
 }
 
 impl GraphViewState {
     /// Smart default: Crate nodes + DependsOn edges only (architecture view).
+    /// Uses the Grouped layout by default for clear cluster-based visualisation.
     pub fn new_structure() -> Self {
         let mut ef = HashMap::new();
         ef.insert(RelationshipKind::Contains, false);
@@ -209,6 +214,7 @@ impl GraphViewState {
             node_type_filters: nt,
             symbol_kind_filters,
             visibility_filters,
+            layout_algorithm: LayoutAlgorithm::Grouped,
             ..default_state(ef)
         }
     }
@@ -488,6 +494,7 @@ pub fn show_canvas(
         let w = vw * scale;
         let h = vh * scale;
 
+        state.cluster_rects.clear();
         match state.layout_algorithm {
             LayoutAlgorithm::ForceDirected => {
                 let layout = crate::layout::LayoutState::new_filtered(graph, w, h, &visible);
@@ -497,6 +504,13 @@ pub fn show_canvas(
             LayoutAlgorithm::Layered => {
                 state.positions =
                     crate::layout::compute_layered_layout(graph, w, h, &visible);
+                state.layout = None;
+            }
+            LayoutAlgorithm::Grouped => {
+                let (pos, rects) =
+                    crate::layout::compute_grouped_layout(graph, w, h, &visible);
+                state.positions = pos;
+                state.cluster_rects = rects;
                 state.layout = None;
             }
         }
@@ -614,6 +628,26 @@ pub fn show_canvas(
         .focus_node
         .filter(|n| visible.contains(n))
         .map(|n| compute_ego_set(graph, n, state.focus_depth, &visible));
+
+    // --- Draw cluster rectangles (Grouped layout only) ---
+    for cr in &state.cluster_rects {
+        let tl = world_to_screen(Vec2::new(cr.x, cr.y));
+        let br = world_to_screen(Vec2::new(cr.x + cr.w, cr.y + cr.h));
+        let cluster_rect = egui::Rect::from_min_max(tl, br);
+        painter.rect(
+            cluster_rect,
+            6.0,
+            Color32::from_rgba_premultiplied(30, 35, 50, 120),
+            Stroke::new(1.0, Color32::from_rgb(70, 80, 100)),
+        );
+        painter.text(
+            Pos2::new(tl.x + 6.0, tl.y + 4.0),
+            egui::Align2::LEFT_TOP,
+            &cr.label,
+            FontId::proportional(11.0 * zoom.sqrt()),
+            Color32::from_rgb(120, 130, 160),
+        );
+    }
 
     // --- Draw edges ---
     for edge_idx in graph.edge_indices() {

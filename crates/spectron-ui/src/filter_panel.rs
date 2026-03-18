@@ -84,6 +84,7 @@ fn show_view_controls(ui: &mut Ui, state: &mut GraphViewState) -> bool {
                 let layout_label = match state.layout_algorithm {
                     LayoutAlgorithm::ForceDirected => "Force",
                     LayoutAlgorithm::Layered => "Layered",
+                    LayoutAlgorithm::Grouped => "Grouped",
                 };
                 egui::ComboBox::from_id_source("layout_algo")
                     .selected_text(RichText::new(layout_label).small())
@@ -104,6 +105,16 @@ fn show_view_controls(ui: &mut Ui, state: &mut GraphViewState) -> bool {
                                 &mut state.layout_algorithm,
                                 LayoutAlgorithm::Layered,
                                 "Layered (Sugiyama)",
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                        if ui
+                            .selectable_value(
+                                &mut state.layout_algorithm,
+                                LayoutAlgorithm::Grouped,
+                                "Grouped (Clusters)",
                             )
                             .changed()
                         {
