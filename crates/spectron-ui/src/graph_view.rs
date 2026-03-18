@@ -101,6 +101,7 @@ pub struct GraphViewState {
     // Phase 3A: Layout algorithm selector
     pub layout_algorithm: LayoutAlgorithm,
     pub active_preset: Option<Preset>,
+    pub request_fit: bool,
     layout: Option<crate::layout::LayoutState>,
     grid: SpatialGrid,
     label_cache: HashMap<NodeIndex, String>,
@@ -179,6 +180,7 @@ fn default_state(edge_filters: HashMap<RelationshipKind, bool>) -> GraphViewStat
         pinned_nodes: HashSet::new(),
         layout_algorithm: LayoutAlgorithm::ForceDirected,
         active_preset: None,
+        request_fit: false,
         layout: None,
         grid: SpatialGrid::new(),
         label_cache: HashMap::new(),
@@ -237,79 +239,6 @@ pub enum ClickResult {
     Nothing,
     NodeClicked(NodeIndex),
     BackgroundClicked,
-}
-
-// ---------------------------------------------------------------------------
-// Toolbar
-// ---------------------------------------------------------------------------
-
-pub fn show_toolbar(ui: &mut Ui, state: &mut GraphViewState) {
-    ui.horizontal(|ui| {
-        ui.label("Edges:");
-        for (kind, label, color) in [
-            (RelationshipKind::Contains, "Contains", CONTAINS_EDGE),
-            (RelationshipKind::Calls, "Calls", CALLS_EDGE),
-            (RelationshipKind::Imports, "Imports", IMPORTS_EDGE),
-            (RelationshipKind::Implements, "Impl", IMPLEMENTS_EDGE),
-            (RelationshipKind::DependsOn, "Deps", DEPENDS_ON_EDGE),
-            (RelationshipKind::References, "Refs", REFERENCES_EDGE),
-        ] {
-            let checked = state.edge_filters.entry(kind).or_insert(true);
-            ui.checkbox(checked, RichText::new(label).color(color).small());
-        }
-        ui.separator();
-
-        // Layout algorithm selector
-        ui.label("Layout:");
-        let layout_label = match state.layout_algorithm {
-            LayoutAlgorithm::ForceDirected => "Force",
-            LayoutAlgorithm::Layered => "Layered",
-        };
-        egui::ComboBox::from_id_source("layout_algo")
-            .selected_text(RichText::new(layout_label).small())
-            .width(70.0)
-            .show_ui(ui, |ui: &mut Ui| {
-                if ui
-                    .selectable_value(
-                        &mut state.layout_algorithm,
-                        LayoutAlgorithm::ForceDirected,
-                        "Force Directed",
-                    )
-                    .changed()
-                {
-                    state.initialized = false;
-                }
-                if ui
-                    .selectable_value(
-                        &mut state.layout_algorithm,
-                        LayoutAlgorithm::Layered,
-                        "Layered (Sugiyama)",
-                    )
-                    .changed()
-                {
-                    state.initialized = false;
-                }
-            });
-
-        ui.separator();
-        if ui.small_button("Reset View").clicked() {
-            state.pan = Vec2::ZERO;
-            state.zoom = 1.0;
-        }
-        if ui.small_button("Fit All").clicked() {
-            let size = ui.available_size();
-            auto_fit_viewport(state, size.x.max(800.0), size.y.max(600.0));
-        }
-        if ui.small_button("Re-layout").clicked() {
-            state.initialized = false;
-        }
-        if state.focus_node.is_some() && ui.small_button("Clear Focus").clicked() {
-            state.focus_node = None;
-        }
-        if !state.pinned_nodes.is_empty() && ui.small_button("Clear Pins").clicked() {
-            state.pinned_nodes.clear();
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +525,13 @@ pub fn show_canvas(
             }
             ui.ctx().request_repaint();
         }
+    }
+
+    // --- Handle deferred fit-all request from the filter panel ---
+    if state.request_fit {
+        state.request_fit = false;
+        let size = ui.available_size();
+        auto_fit_viewport(state, size.x.max(800.0), size.y.max(600.0));
     }
 
     // --- Rebuild spatial grid from current positions ---

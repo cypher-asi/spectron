@@ -5,10 +5,12 @@ use std::collections::HashSet;
 use egui::{Color32, RichText, Ui};
 use spectron_core::{RelationshipKind, SymbolId, SymbolKind, Visibility};
 
+use egui::Vec2;
+
 use crate::graph_view::{
-    GraphViewState, NodeTypeFilter, Preset, CALLS_EDGE, CONTAINS_EDGE, CRATE_COLOR,
-    DEFAULT_NODE_COLOR, DEPENDS_ON_EDGE, FILE_COLOR, FUNCTION_COLOR, IMPLEMENTS_EDGE, IMPORTS_EDGE,
-    MODULE_COLOR, REFERENCES_EDGE, STRUCT_COLOR, TRAIT_COLOR,
+    GraphViewState, LayoutAlgorithm, NodeTypeFilter, Preset, CALLS_EDGE, CONTAINS_EDGE,
+    CRATE_COLOR, DEFAULT_NODE_COLOR, DEPENDS_ON_EDGE, FILE_COLOR, FUNCTION_COLOR, IMPLEMENTS_EDGE,
+    IMPORTS_EDGE, MODULE_COLOR, REFERENCES_EDGE, STRUCT_COLOR, TRAIT_COLOR,
 };
 use crate::ProjectData;
 
@@ -26,6 +28,10 @@ pub fn show_filter_panel(
 
     ui.label(RichText::new("Filters").strong());
     ui.add_space(4.0);
+
+    changed |= show_view_controls(ui, state);
+    ui.add_space(4.0);
+    ui.separator();
 
     changed |= show_presets(ui, state);
     ui.add_space(4.0);
@@ -59,6 +65,66 @@ pub fn show_filter_panel(
         state.active_preset = None;
     }
     changed |= manual_changed;
+
+    changed
+}
+
+// ---------------------------------------------------------------------------
+// View controls (layout, reset, fit)
+// ---------------------------------------------------------------------------
+
+fn show_view_controls(ui: &mut Ui, state: &mut GraphViewState) -> bool {
+    let mut changed = false;
+
+    egui::CollapsingHeader::new(RichText::new("View Controls").small().strong())
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Layout:").small());
+                let layout_label = match state.layout_algorithm {
+                    LayoutAlgorithm::ForceDirected => "Force",
+                    LayoutAlgorithm::Layered => "Layered",
+                };
+                egui::ComboBox::from_id_source("layout_algo")
+                    .selected_text(RichText::new(layout_label).small())
+                    .width(90.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_value(
+                                &mut state.layout_algorithm,
+                                LayoutAlgorithm::ForceDirected,
+                                "Force Directed",
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                        if ui
+                            .selectable_value(
+                                &mut state.layout_algorithm,
+                                LayoutAlgorithm::Layered,
+                                "Layered (Sugiyama)",
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.small_button("Reset View").clicked() {
+                    state.pan = Vec2::ZERO;
+                    state.zoom = 1.0;
+                }
+                if ui.small_button("Fit All").clicked() {
+                    state.request_fit = true;
+                }
+                if ui.small_button("Re-layout").clicked() {
+                    changed = true;
+                }
+            });
+        });
 
     changed
 }
