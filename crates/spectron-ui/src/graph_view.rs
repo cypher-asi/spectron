@@ -17,19 +17,19 @@ use crate::ProjectData;
 // Colors (pub for filter_panel)
 // ---------------------------------------------------------------------------
 
-pub const CRATE_COLOR: Color32 = Color32::from_rgb(110, 180, 255);
-pub const MODULE_COLOR: Color32 = Color32::from_rgb(160, 215, 140);
-pub const FUNCTION_COLOR: Color32 = Color32::from_rgb(255, 170, 100);
-pub const STRUCT_COLOR: Color32 = Color32::from_rgb(200, 165, 255);
-pub const TRAIT_COLOR: Color32 = Color32::from_rgb(100, 210, 210);
+pub const CRATE_COLOR: Color32 = Color32::from_rgb(77, 84, 245); // #4D54F5
+pub const MODULE_COLOR: Color32 = Color32::from_rgb(82, 242, 132); // #52F284
+pub const FUNCTION_COLOR: Color32 = Color32::from_rgb(254, 75, 66); // #FE4B42
+pub const STRUCT_COLOR: Color32 = Color32::from_rgb(182, 83, 249); // #B653F9
+pub const TRAIT_COLOR: Color32 = Color32::from_rgb(171, 240, 18); // #ABF012
 pub const FILE_COLOR: Color32 = Color32::from_rgb(140, 140, 150);
 pub const DEFAULT_NODE_COLOR: Color32 = Color32::from_rgb(170, 170, 170);
 
 pub const CONTAINS_EDGE: Color32 = Color32::from_rgb(80, 80, 80);
-pub const CALLS_EDGE: Color32 = Color32::from_rgb(255, 170, 100);
-pub const IMPORTS_EDGE: Color32 = Color32::from_rgb(110, 180, 255);
-pub const IMPLEMENTS_EDGE: Color32 = Color32::from_rgb(160, 215, 140);
-pub const DEPENDS_ON_EDGE: Color32 = Color32::from_rgb(255, 100, 100);
+pub const CALLS_EDGE: Color32 = Color32::from_rgb(254, 75, 66); // #FE4B42
+pub const IMPORTS_EDGE: Color32 = Color32::from_rgb(77, 84, 245); // #4D54F5
+pub const IMPLEMENTS_EDGE: Color32 = Color32::from_rgb(82, 242, 132); // #52F284
+pub const DEPENDS_ON_EDGE: Color32 = Color32::from_rgb(254, 75, 66); // #FE4B42
 pub const REFERENCES_EDGE: Color32 = Color32::from_rgb(150, 150, 150);
 
 // ---------------------------------------------------------------------------
@@ -830,7 +830,7 @@ pub fn show_canvas(
                     painter.circle_filled(
                         screen_pos,
                         radius + 4.0 * zoom,
-                        with_alpha(Color32::from_rgb(255, 200, 50), alpha * 0.2),
+                        with_alpha(Color32::from_rgb(171, 240, 18), alpha * 0.2),
                     );
                 }
                 if is_selected {
@@ -844,7 +844,7 @@ pub fn show_canvas(
                     painter.circle_stroke(
                         screen_pos,
                         radius + 3.5,
-                        Stroke::new(1.5, Color32::from_rgb(255, 200, 50)),
+                        Stroke::new(1.5, Color32::from_rgb(171, 240, 18)),
                     );
                 }
                 let color = with_alpha(

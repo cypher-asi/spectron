@@ -67,8 +67,8 @@ pub fn show_filter_panel(
 // Presets
 // ---------------------------------------------------------------------------
 
-const CHIP_ACTIVE_FILL: Color32 = Color32::from_rgb(45, 85, 145);
-const CHIP_ACTIVE_STROKE: Color32 = Color32::from_rgb(75, 125, 200);
+const CHIP_ACTIVE_FILL: Color32 = Color32::from_rgb(30, 32, 100); // dark #4D54F5
+const CHIP_ACTIVE_STROKE: Color32 = Color32::from_rgb(77, 84, 245); // #4D54F5
 const CHIP_ACTIVE_TEXT: Color32 = Color32::WHITE;
 const CHIP_INACTIVE_FILL: Color32 = Color32::from_rgb(30, 30, 30);
 const CHIP_INACTIVE_TEXT: Color32 = Color32::from_rgb(140, 140, 140);
@@ -444,7 +444,7 @@ fn show_highlights(
                     &mut state.highlight_unsafe_only,
                     RichText::new(label_unsafe)
                         .small()
-                        .color(Color32::from_rgb(255, 110, 110)),
+                        .color(Color32::from_rgb(254, 75, 66)),
                 )
                 .changed()
             {
@@ -458,7 +458,7 @@ fn show_highlights(
                     &mut state.highlight_flagged_only,
                     RichText::new(label_flagged)
                         .small()
-                        .color(Color32::from_rgb(255, 200, 50)),
+                        .color(Color32::from_rgb(171, 240, 18)),
                 )
                 .changed()
             {
@@ -480,7 +480,7 @@ fn show_focus_controls(ui: &mut Ui, state: &mut GraphViewState) -> bool {
         .default_open(false)
         .show(ui, |ui| {
             if state.focus_node.is_some() {
-                ui.label(RichText::new("Focus node active").small().color(Color32::from_rgb(255, 200, 50)));
+                ui.label(RichText::new("Focus node active").small().color(Color32::from_rgb(171, 240, 18)));
                 ui.add_space(2.0);
                 let mut depth = state.focus_depth as f64;
                 if ui

@@ -9,12 +9,11 @@ use spectron_core::{
 use crate::ProjectData;
 
 const DIM: Color32 = Color32::from_rgb(150, 150, 150);
-const ORANGE: Color32 = Color32::from_rgb(255, 170, 100);
-const BLUE: Color32 = Color32::from_rgb(110, 180, 255);
-const GREEN: Color32 = Color32::from_rgb(160, 215, 140);
-const PURPLE: Color32 = Color32::from_rgb(200, 165, 255);
-const TEAL: Color32 = Color32::from_rgb(100, 210, 210);
-const RED: Color32 = Color32::from_rgb(255, 110, 110);
+const BLUE: Color32 = Color32::from_rgb(77, 84, 245); // #4D54F5
+const RED: Color32 = Color32::from_rgb(254, 75, 66); // #FE4B42
+const GREEN: Color32 = Color32::from_rgb(82, 242, 132); // #52F284
+const PURPLE: Color32 = Color32::from_rgb(182, 83, 249); // #B653F9
+const YELLOW_GREEN: Color32 = Color32::from_rgb(171, 240, 18); // #ABF012
 
 // ---------------------------------------------------------------------------
 // Inspector target
@@ -446,9 +445,9 @@ fn symbol_kind_label(k: &SymbolKind) -> &'static str {
 
 pub fn symbol_kind_color(k: &SymbolKind) -> Color32 {
     match k {
-        SymbolKind::Function | SymbolKind::Method => ORANGE,
+        SymbolKind::Function | SymbolKind::Method => RED,
         SymbolKind::Struct | SymbolKind::Enum => PURPLE,
-        SymbolKind::Trait => TEAL,
+        SymbolKind::Trait => YELLOW_GREEN,
         SymbolKind::ImplBlock => DIM,
         _ => DIM,
     }
