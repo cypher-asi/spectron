@@ -100,6 +100,7 @@ pub struct GraphViewState {
     pub pinned_nodes: HashSet<NodeIndex>,
     // Phase 3A: Layout algorithm selector
     pub layout_algorithm: LayoutAlgorithm,
+    pub active_preset: Option<Preset>,
     layout: Option<crate::layout::LayoutState>,
     grid: SpatialGrid,
     label_cache: HashMap<NodeIndex, String>,
@@ -110,6 +111,17 @@ pub struct GraphViewState {
 pub enum LayoutAlgorithm {
     ForceDirected,
     Layered,
+}
+
+/// Active filter preset (used for visual feedback in the filter panel).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    Dependencies,
+    Modules,
+    CallFlow,
+    TypeGraph,
+    Imports,
+    Everything,
 }
 
 fn default_filters() -> (
@@ -166,6 +178,7 @@ fn default_state(edge_filters: HashMap<RelationshipKind, bool>) -> GraphViewStat
         focus_depth: 1,
         pinned_nodes: HashSet::new(),
         layout_algorithm: LayoutAlgorithm::ForceDirected,
+        active_preset: None,
         layout: None,
         grid: SpatialGrid::new(),
         label_cache: HashMap::new(),
@@ -282,6 +295,10 @@ pub fn show_toolbar(ui: &mut Ui, state: &mut GraphViewState) {
         if ui.small_button("Reset View").clicked() {
             state.pan = Vec2::ZERO;
             state.zoom = 1.0;
+        }
+        if ui.small_button("Fit All").clicked() {
+            let size = ui.available_size();
+            auto_fit_viewport(state, size.x.max(800.0), size.y.max(600.0));
         }
         if ui.small_button("Re-layout").clicked() {
             state.initialized = false;
@@ -535,8 +552,12 @@ pub fn show_canvas(
     // --- Initialisation / re-layout ---
     if !state.initialized {
         let size = ui.available_size();
-        let w = size.x.max(800.0);
-        let h = size.y.max(600.0);
+        let vw = size.x.max(800.0);
+        let vh = size.y.max(600.0);
+        // Use a larger virtual canvas so the layout has room to spread nodes.
+        let scale = 2.5_f32 + (visible.len() as f32 / 30.0).min(2.0);
+        let w = vw * scale;
+        let h = vh * scale;
 
         match state.layout_algorithm {
             LayoutAlgorithm::ForceDirected => {
@@ -557,14 +578,22 @@ pub fn show_canvas(
             state.label_cache.insert(node_idx, node_label(node, data));
         }
 
+        // Auto-fit: compute bounding box and set zoom/pan to show all nodes.
+        auto_fit_viewport(state, vw, vh);
+
         state.initialized = true;
     }
 
     // --- Incremental layout stepping (force-directed only) ---
     if let Some(ref mut layout) = state.layout {
         if !layout.done {
+            let was_running = true;
             layout.step(graph);
             state.positions = layout.to_position_map();
+            if was_running && layout.done {
+                let size = ui.available_size();
+                auto_fit_viewport(state, size.x.max(800.0), size.y.max(600.0));
+            }
             ui.ctx().request_repaint();
         }
     }
@@ -988,6 +1017,38 @@ fn node_radius(node: &GraphNode, data: &ProjectData) -> f32 {
         }
         GraphNode::File(_) => 7.0,
     }
+}
+
+/// Compute zoom and pan so that all positioned nodes fit within the viewport with padding.
+fn auto_fit_viewport(state: &mut GraphViewState, viewport_w: f32, viewport_h: f32) {
+    if state.positions.is_empty() {
+        return;
+    }
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for pos in state.positions.values() {
+        min_x = min_x.min(pos.x);
+        min_y = min_y.min(pos.y);
+        max_x = max_x.max(pos.x);
+        max_y = max_y.max(pos.y);
+    }
+
+    let content_w = (max_x - min_x).max(1.0);
+    let content_h = (max_y - min_y).max(1.0);
+    let padding = 60.0;
+
+    let zoom_x = (viewport_w - padding * 2.0) / content_w;
+    let zoom_y = (viewport_h - padding * 2.0) / content_h;
+    state.zoom = zoom_x.min(zoom_y).clamp(0.15, 2.0);
+
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+    state.pan = Vec2::new(
+        viewport_w / 2.0 - center_x * state.zoom,
+        viewport_h / 2.0 - center_y * state.zoom,
+    );
 }
 
 fn lighten(c: Color32, amt: u8) -> Color32 {

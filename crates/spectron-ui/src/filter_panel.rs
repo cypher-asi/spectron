@@ -6,9 +6,9 @@ use egui::{Color32, RichText, Ui};
 use spectron_core::{RelationshipKind, SymbolId, SymbolKind, Visibility};
 
 use crate::graph_view::{
-    GraphViewState, NodeTypeFilter, CALLS_EDGE, CONTAINS_EDGE, CRATE_COLOR, DEFAULT_NODE_COLOR,
-    DEPENDS_ON_EDGE, FILE_COLOR, FUNCTION_COLOR, IMPLEMENTS_EDGE, IMPORTS_EDGE, MODULE_COLOR,
-    REFERENCES_EDGE, STRUCT_COLOR, TRAIT_COLOR,
+    GraphViewState, NodeTypeFilter, Preset, CALLS_EDGE, CONTAINS_EDGE, CRATE_COLOR,
+    DEFAULT_NODE_COLOR, DEPENDS_ON_EDGE, FILE_COLOR, FUNCTION_COLOR, IMPLEMENTS_EDGE, IMPORTS_EDGE,
+    MODULE_COLOR, REFERENCES_EDGE, STRUCT_COLOR, TRAIT_COLOR,
 };
 use crate::ProjectData;
 
@@ -30,28 +30,35 @@ pub fn show_filter_panel(
     changed |= show_presets(ui, state);
     ui.add_space(4.0);
     ui.separator();
-    changed |= show_node_types(ui, state);
+
+    let mut manual_changed = false;
+    manual_changed |= show_node_types(ui, state);
     ui.add_space(2.0);
     ui.separator();
-    changed |= show_symbol_kinds(ui, state);
+    manual_changed |= show_symbol_kinds(ui, state);
     ui.add_space(2.0);
     ui.separator();
-    changed |= show_edge_types(ui, state);
+    manual_changed |= show_edge_types(ui, state);
     ui.add_space(2.0);
     ui.separator();
-    changed |= show_visibility(ui, state);
+    manual_changed |= show_visibility(ui, state);
     ui.add_space(2.0);
     ui.separator();
-    changed |= show_crates(ui, state, data);
+    manual_changed |= show_crates(ui, state, data);
     ui.add_space(2.0);
     ui.separator();
-    changed |= show_highlights(ui, state, data, entrypoints);
+    manual_changed |= show_highlights(ui, state, data, entrypoints);
     ui.add_space(2.0);
     ui.separator();
-    changed |= show_focus_controls(ui, state);
+    manual_changed |= show_focus_controls(ui, state);
     ui.add_space(2.0);
     ui.separator();
-    changed |= show_degree_filter(ui, state);
+    manual_changed |= show_degree_filter(ui, state);
+
+    if manual_changed {
+        state.active_preset = None;
+    }
+    changed |= manual_changed;
 
     changed
 }
@@ -60,37 +67,63 @@ pub fn show_filter_panel(
 // Presets
 // ---------------------------------------------------------------------------
 
+const CHIP_ACTIVE_FILL: Color32 = Color32::from_rgb(45, 85, 145);
+const CHIP_ACTIVE_STROKE: Color32 = Color32::from_rgb(75, 125, 200);
+const CHIP_ACTIVE_TEXT: Color32 = Color32::WHITE;
+const CHIP_INACTIVE_FILL: Color32 = Color32::from_rgb(30, 30, 30);
+const CHIP_INACTIVE_TEXT: Color32 = Color32::from_rgb(140, 140, 140);
+
+fn preset_chip(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
+    let text = RichText::new(label).small();
+    if active {
+        ui.add(
+            egui::Button::new(text.color(CHIP_ACTIVE_TEXT))
+                .fill(CHIP_ACTIVE_FILL)
+                .stroke(egui::Stroke::new(1.0, CHIP_ACTIVE_STROKE)),
+        )
+    } else {
+        ui.add(egui::Button::new(text.color(CHIP_INACTIVE_TEXT)).fill(CHIP_INACTIVE_FILL))
+    }
+}
+
 fn show_presets(ui: &mut Ui, state: &mut GraphViewState) -> bool {
     let mut changed = false;
+    let active = state.active_preset;
 
     egui::CollapsingHeader::new(RichText::new("Presets").small().strong())
         .default_open(true)
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.small_button("Dependencies").clicked() {
+                if preset_chip(ui, "Dependencies", active == Some(Preset::Dependencies)).clicked() {
                     apply_preset_dependencies(state);
+                    state.active_preset = Some(Preset::Dependencies);
                     changed = true;
                 }
-                if ui.small_button("Modules").clicked() {
+                if preset_chip(ui, "Modules", active == Some(Preset::Modules)).clicked() {
                     apply_preset_module_structure(state);
+                    state.active_preset = Some(Preset::Modules);
                     changed = true;
                 }
-                if ui.small_button("Call Flow").clicked() {
+                if preset_chip(ui, "Call Flow", active == Some(Preset::CallFlow)).clicked() {
                     apply_preset_call_flow(state);
+                    state.active_preset = Some(Preset::CallFlow);
                     changed = true;
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                if ui.small_button("Type Graph").clicked() {
+                if preset_chip(ui, "Type Graph", active == Some(Preset::TypeGraph)).clicked() {
                     apply_preset_type_graph(state);
+                    state.active_preset = Some(Preset::TypeGraph);
                     changed = true;
                 }
-                if ui.small_button("Imports").clicked() {
+                if preset_chip(ui, "Imports", active == Some(Preset::Imports)).clicked() {
                     apply_preset_imports(state);
+                    state.active_preset = Some(Preset::Imports);
                     changed = true;
                 }
-                if ui.small_button("Everything").clicked() {
+                if preset_chip(ui, "Everything", active == Some(Preset::Everything)).clicked() {
                     apply_preset_everything(state);
+                    state.active_preset = Some(Preset::Everything);
                     changed = true;
                 }
             });

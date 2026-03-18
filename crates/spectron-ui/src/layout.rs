@@ -7,8 +7,14 @@ use petgraph::graph::NodeIndex;
 use spectron_core::ArchGraph;
 
 const THETA: f32 = 0.8;
-const MAX_ITERATIONS: usize = 200;
-const ITERATIONS_PER_STEP: usize = 8;
+const MAX_ITERATIONS: usize = 300;
+const ITERATIONS_PER_STEP: usize = 10;
+
+/// Extra multiplier on ideal distance `k` so nodes spread further apart.
+const SPREAD_FACTOR: f32 = 2.2;
+
+/// Boundary margin as a fraction of the layout dimension.
+const MARGIN_FRAC: f32 = 0.03;
 
 // ---------------------------------------------------------------------------
 // Quadtree for Barnes-Hut repulsion approximation
@@ -209,7 +215,7 @@ impl LayoutState {
 
         let area = width * height;
         let k = if n > 0 {
-            (area / n as f32).sqrt()
+            (area / n as f32).sqrt() * SPREAD_FACTOR
         } else {
             1.0
         };
@@ -218,14 +224,14 @@ impl LayoutState {
         let mut positions = Vec::with_capacity(n);
         for (i, _) in nodes.iter().enumerate() {
             let angle = 2.0 * std::f32::consts::PI * i as f32 / n_f;
-            let r = k * (i as f32 + 1.0).sqrt();
+            let r = k * 1.5 * (i as f32 + 1.0).sqrt();
             positions.push(Vec2::new(
                 width / 2.0 + r * angle.cos(),
                 height / 2.0 + r * angle.sin(),
             ));
         }
 
-        let temperature = width.min(height) / 4.0;
+        let temperature = width.min(height) / 2.0;
         let cooling = temperature / MAX_ITERATIONS as f32;
 
         Self {
@@ -281,12 +287,14 @@ impl LayoutState {
                 }
             }
 
+            let mx = self.width * MARGIN_FRAC;
+            let my = self.height * MARGIN_FRAC;
             for i in 0..n {
                 let len = self.disp[i].length().max(0.001);
                 let bounded = self.disp[i] / len * len.min(self.temperature);
                 self.positions[i] += bounded;
-                self.positions[i].x = self.positions[i].x.clamp(30.0, self.width - 30.0);
-                self.positions[i].y = self.positions[i].y.clamp(30.0, self.height - 30.0);
+                self.positions[i].x = self.positions[i].x.clamp(mx, self.width - mx);
+                self.positions[i].y = self.positions[i].y.clamp(my, self.height - my);
             }
 
             self.temperature -= self.cooling;
@@ -471,18 +479,21 @@ pub fn compute_layered_layout(
         }
     }
 
-    // Position assignment.
+    // Position assignment with generous spacing.
     let num_layers = layers.len().max(1);
-    let layer_spacing = (height - 80.0) / num_layers as f32;
-    let margin = 40.0;
+    let margin_x = width * 0.06;
+    let margin_y = height * 0.06;
+    let usable_w = width - 2.0 * margin_x;
+    let usable_h = height - 2.0 * margin_y;
+    let layer_spacing = usable_h / num_layers.max(2) as f32;
 
     let mut positions = HashMap::new();
     for (layer_idx, layer) in layers.iter().enumerate() {
         let count = layer.len().max(1);
-        let node_spacing = (width - 2.0 * margin) / count as f32;
+        let node_spacing = usable_w / count as f32;
         for (pos_idx, &n) in layer.iter().enumerate() {
-            let x = margin + (pos_idx as f32 + 0.5) * node_spacing;
-            let y = margin + layer_idx as f32 * layer_spacing;
+            let x = margin_x + (pos_idx as f32 + 0.5) * node_spacing;
+            let y = margin_y + (layer_idx as f32 + 0.5) * layer_spacing;
             positions.insert(n, Vec2::new(x, y));
         }
     }
