@@ -1,0 +1,15 @@
+[package]
+name = "spectron-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spectron-core = { workspace = true }
+spectron-parser = { workspace = true }
+spectron-graph = { workspace = true }
+spectron-analysis = { workspace = true }
+petgraph = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

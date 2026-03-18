@@ -1,0 +1,10 @@
+[package]
+name = "spectron-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spectron-core = { workspace = true }
+wgpu = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

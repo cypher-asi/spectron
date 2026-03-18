@@ -1,0 +1,14 @@
+[package]
+name = "spectron-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spectron-core = { workspace = true }
+sled = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

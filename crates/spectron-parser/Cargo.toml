@@ -1,0 +1,14 @@
+[package]
+name = "spectron-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spectron-core = { workspace = true }
+spectron-loader = { workspace = true }
+syn = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rayon = { workspace = true }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }

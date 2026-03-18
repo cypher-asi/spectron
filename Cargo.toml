@@ -1,0 +1,72 @@
+[workspace]
+members = [
+    "crates/spectron-core",
+    "crates/spectron-loader",
+    "crates/spectron-parser",
+    "crates/spectron-graph",
+    "crates/spectron-analysis",
+    "crates/spectron-storage",
+    "crates/spectron-render",
+    "crates/spectron-ui",
+    "crates/spectron-app"
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Parsing
+syn = { version = "2", features = ["full", "parsing", "visit"] }
+cargo_toml = "0.20"
+toml = "0.8"
+
+# File walking
+walkdir = "2"
+glob = "0.3"
+
+# Graph
+petgraph = "0.6"
+
+# GPU / Rendering
+wgpu = "0.20"
+winit = "0.29"
+egui = "0.28"
+egui-wgpu = "0.28"
+egui-winit = "0.28"
+eframe = "0.28"
+
+# Persistence
+sled = "0.34"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Parallelism
+rayon = "1"
+
+# Hashing
+sha2 = "0.10"
+
+# Internal crates
+spectron-core = { path = "crates/spectron-core" }
+spectron-loader = { path = "crates/spectron-loader" }
+spectron-parser = { path = "crates/spectron-parser" }
+spectron-graph = { path = "crates/spectron-graph" }
+spectron-analysis = { path = "crates/spectron-analysis" }
+spectron-storage = { path = "crates/spectron-storage" }
+spectron-render = { path = "crates/spectron-render" }
+spectron-ui = { path = "crates/spectron-ui" }

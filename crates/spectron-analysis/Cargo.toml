@@ -1,0 +1,11 @@
+[package]
+name = "spectron-analysis"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spectron-core = { workspace = true }
+spectron-graph = { workspace = true }
+petgraph = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
