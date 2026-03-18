@@ -186,7 +186,7 @@ fn default_state(edge_filters: HashMap<RelationshipKind, bool>) -> GraphViewStat
         focus_node: None,
         focus_depth: 1,
         pinned_nodes: HashSet::new(),
-        layout_algorithm: LayoutAlgorithm::ForceDirected,
+        layout_algorithm: LayoutAlgorithm::Layered,
         active_preset: None,
         request_fit: false,
         layout: None,
@@ -221,7 +221,7 @@ impl GraphViewState {
             node_type_filters: nt,
             symbol_kind_filters,
             visibility_filters,
-            layout_algorithm: LayoutAlgorithm::Grouped,
+            layout_algorithm: LayoutAlgorithm::Layered,
             ..default_state(ef)
         }
     }
