@@ -690,10 +690,15 @@ pub fn show_canvas(
 
         let both_in_cycle = state.cycle_nodes.contains(&src)
             && state.cycle_nodes.contains(&tgt);
-        let base_color = if both_in_cycle {
+        let is_hover_connected = state.hovered
+            .map_or(false, |h| h == src || h == tgt);
+
+        let base_color = if both_in_cycle && is_hover_connected {
             Color32::from_rgb(255, 60, 60)
-        } else {
+        } else if is_hover_connected {
             edge_color(&edge.kind)
+        } else {
+            Color32::from_rgb(60, 60, 60)
         };
         let weight_alpha = (60.0 + (edge.weight.min(5.0) / 5.0) * 160.0) / 255.0;
         let final_alpha = edge_alpha * weight_alpha;
