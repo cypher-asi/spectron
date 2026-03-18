@@ -279,6 +279,54 @@ pub fn find_cycles(graph: &ArchGraph) -> Vec<Vec<NodeIndex>> {
 }
 
 // ---------------------------------------------------------------------------
+// topological_sort (Kahn's algorithm)
+// ---------------------------------------------------------------------------
+
+/// Compute a topological ordering of the graph using Kahn's algorithm.
+///
+/// Returns `Some(order)` with nodes in dependency order (sources first) if
+/// the graph is a DAG, or `None` if the graph contains cycles.
+///
+/// When multiple nodes are eligible at the same step, they are emitted in
+/// ascending `NodeIndex` order for deterministic output.
+pub fn topological_sort(graph: &ArchGraph) -> Option<Vec<NodeIndex>> {
+    let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
+    for node in graph.node_indices() {
+        in_degree.insert(node, 0);
+    }
+    for edge in graph.edge_references() {
+        *in_degree.entry(edge.target()).or_default() += 1;
+    }
+
+    let mut queue: std::collections::BinaryHeap<std::cmp::Reverse<NodeIndex>> =
+        std::collections::BinaryHeap::new();
+    for (&node, &deg) in &in_degree {
+        if deg == 0 {
+            queue.push(std::cmp::Reverse(node));
+        }
+    }
+
+    let mut order = Vec::with_capacity(graph.node_count());
+    while let Some(std::cmp::Reverse(node)) = queue.pop() {
+        order.push(node);
+        for neighbor in graph.neighbors_directed(node, Direction::Outgoing) {
+            if let Some(deg) = in_degree.get_mut(&neighbor) {
+                *deg -= 1;
+                if *deg == 0 {
+                    queue.push(std::cmp::Reverse(neighbor));
+                }
+            }
+        }
+    }
+
+    if order.len() == graph.node_count() {
+        Some(order)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // degree_centrality
 // ---------------------------------------------------------------------------
 
@@ -576,6 +624,65 @@ mod tests {
         let comps = components(&graph);
         assert_eq!(comps.len(), 1, "A and B should be in the same component");
         assert_eq!(comps[0].len(), 2);
+    }
+
+    // -------------------------------------------------------------------
+    // topological_sort tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn topological_sort_linear_dag() {
+        let (graph, a, b, c, d) = build_linear_graph();
+        let order = topological_sort(&graph).expect("linear graph is a DAG");
+        assert_eq!(order, vec![a, b, c, d]);
+    }
+
+    #[test]
+    fn topological_sort_diamond_dag() {
+        let mut graph = ArchGraph::new();
+        let a = graph.add_node(GraphNode::Symbol(SymbolId(0)));
+        let b = graph.add_node(GraphNode::Symbol(SymbolId(1)));
+        let c = graph.add_node(GraphNode::Symbol(SymbolId(2)));
+        let d = graph.add_node(GraphNode::Symbol(SymbolId(3)));
+        graph.add_edge(a, b, GraphEdge::new(RelationshipKind::Calls, 1.0));
+        graph.add_edge(a, c, GraphEdge::new(RelationshipKind::Calls, 1.0));
+        graph.add_edge(b, d, GraphEdge::new(RelationshipKind::Calls, 1.0));
+        graph.add_edge(c, d, GraphEdge::new(RelationshipKind::Calls, 1.0));
+
+        let order = topological_sort(&graph).expect("diamond is a DAG");
+        assert_eq!(order[0], a, "root first");
+        assert_eq!(*order.last().unwrap(), d, "sink last");
+    }
+
+    #[test]
+    fn topological_sort_with_cycle_returns_none() {
+        let mut graph = ArchGraph::new();
+        let a = graph.add_node(GraphNode::Symbol(SymbolId(0)));
+        let b = graph.add_node(GraphNode::Symbol(SymbolId(1)));
+        let c = graph.add_node(GraphNode::Symbol(SymbolId(2)));
+        graph.add_edge(a, b, GraphEdge::new(RelationshipKind::Calls, 1.0));
+        graph.add_edge(b, c, GraphEdge::new(RelationshipKind::Calls, 1.0));
+        graph.add_edge(c, a, GraphEdge::new(RelationshipKind::Calls, 1.0));
+
+        assert!(topological_sort(&graph).is_none(), "cyclic graph has no topological order");
+    }
+
+    #[test]
+    fn topological_sort_empty_graph() {
+        let graph = ArchGraph::new();
+        let order = topological_sort(&graph).expect("empty graph is a trivial DAG");
+        assert!(order.is_empty());
+    }
+
+    #[test]
+    fn topological_sort_isolated_nodes() {
+        let mut graph = ArchGraph::new();
+        let _a = graph.add_node(GraphNode::Symbol(SymbolId(0)));
+        let _b = graph.add_node(GraphNode::Symbol(SymbolId(1)));
+        let _c = graph.add_node(GraphNode::Symbol(SymbolId(2)));
+
+        let order = topological_sort(&graph).expect("isolated nodes form a DAG");
+        assert_eq!(order.len(), 3);
     }
 
     // -------------------------------------------------------------------
