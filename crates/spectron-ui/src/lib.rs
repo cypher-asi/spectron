@@ -33,6 +33,7 @@ const TITLEBAR_HEIGHT: f32 = 36.0;
 const WINDOW_BTN_SIZE: f32 = 28.0;
 const WINDOW_ICON_SIZE: f32 = 10.0;
 const WINDOW_ICON_STROKE: f32 = 1.5;
+const RESIZE_BORDER: f32 = 5.0;
 
 // ---------------------------------------------------------------------------
 // Window control buttons
@@ -106,6 +107,54 @@ fn window_control_button(ui: &mut Ui, control: WindowControl) -> egui::Response 
     }
 
     response
+}
+
+fn handle_window_resize(ctx: &egui::Context) {
+    let pointer_pos = match ctx.input(|i| i.pointer.hover_pos()) {
+        Some(pos) => pos,
+        None => return,
+    };
+    let screen = ctx.input(|i| i.screen_rect());
+    let b = RESIZE_BORDER;
+
+    let on_left = pointer_pos.x <= screen.left() + b;
+    let on_right = pointer_pos.x >= screen.right() - b;
+    let on_top = pointer_pos.y <= screen.top() + b;
+    let on_bottom = pointer_pos.y >= screen.bottom() - b;
+
+    let direction = match (on_left, on_right, on_top, on_bottom) {
+        (true, _, true, _) => Some(egui::viewport::ResizeDirection::NorthWest),
+        (true, _, _, true) => Some(egui::viewport::ResizeDirection::SouthWest),
+        (_, true, true, _) => Some(egui::viewport::ResizeDirection::NorthEast),
+        (_, true, _, true) => Some(egui::viewport::ResizeDirection::SouthEast),
+        (true, _, _, _) => Some(egui::viewport::ResizeDirection::West),
+        (_, true, _, _) => Some(egui::viewport::ResizeDirection::East),
+        (_, _, true, _) => Some(egui::viewport::ResizeDirection::North),
+        (_, _, _, true) => Some(egui::viewport::ResizeDirection::South),
+        _ => None,
+    };
+
+    if let Some(dir) = direction {
+        let cursor = match dir {
+            egui::viewport::ResizeDirection::North | egui::viewport::ResizeDirection::South => {
+                egui::CursorIcon::ResizeVertical
+            }
+            egui::viewport::ResizeDirection::East | egui::viewport::ResizeDirection::West => {
+                egui::CursorIcon::ResizeHorizontal
+            }
+            egui::viewport::ResizeDirection::NorthWest | egui::viewport::ResizeDirection::SouthEast => {
+                egui::CursorIcon::ResizeNwSe
+            }
+            egui::viewport::ResizeDirection::NorthEast | egui::viewport::ResizeDirection::SouthWest => {
+                egui::CursorIcon::ResizeNeSw
+            }
+        };
+        ctx.set_cursor_icon(cursor);
+
+        if ctx.input(|i| i.pointer.any_pressed()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +255,14 @@ impl eframe::App for SpectronApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
 
+        // Edge-resize for frameless window
+        if !is_maximized {
+            handle_window_resize(ctx);
+        }
+
+        // Track the button area so we can exclude it from drag detection
+        let mut buttons_rect = Rect::NOTHING;
+
         // ---- Custom titlebar ----
         let titlebar_response = egui::TopBottomPanel::top("titlebar")
             .exact_height(TITLEBAR_HEIGHT)
@@ -246,15 +303,19 @@ impl eframe::App for SpectronApp {
                     // Window control buttons on the right
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(2.0);
-                        if window_control_button(ui, WindowControl::Close).clicked() {
+                        let close_r = window_control_button(ui, WindowControl::Close);
+                        if close_r.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-                        if window_control_button(ui, WindowControl::Maximize).clicked() {
+                        let max_r = window_control_button(ui, WindowControl::Maximize);
+                        if max_r.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
                         }
-                        if window_control_button(ui, WindowControl::Minimize).clicked() {
+                        let min_r = window_control_button(ui, WindowControl::Minimize);
+                        if min_r.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
+                        buttons_rect = close_r.rect.union(max_r.rect).union(min_r.rect);
                     });
                 });
             });
@@ -270,13 +331,18 @@ impl eframe::App for SpectronApp {
             Stroke::new(1.0, BORDER),
         );
 
-        // Drag & double-click on titlebar
-        let titlebar_resp = titlebar_response.response;
-        if titlebar_resp.is_pointer_button_down_on() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
-        if titlebar_resp.double_clicked() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+        // Drag & double-click on titlebar (only outside button area)
+        if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
+            let in_titlebar = titlebar_rect.contains(pos);
+            let in_buttons = buttons_rect.contains(pos);
+            if in_titlebar && !in_buttons {
+                if ctx.input(|i| i.pointer.any_pressed()) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                }
+            }
         }
 
         // ---- Right panel: filter panel + inspector ----
@@ -550,7 +616,6 @@ impl eframe::App for SpectronApp {
                         });
                 }
                 ViewMode::Architecture | ViewMode::StructureGraph | ViewMode::CycleView | ViewMode::HotspotView => {
-                    graph_view::show_toolbar(ui, &mut self.structure_state);
                     let result = graph_view::show_canvas(
                         ui,
                         &self.data.graph_set.structure_graph,
@@ -572,7 +637,6 @@ impl eframe::App for SpectronApp {
                     }
                 }
                 ViewMode::CallGraph => {
-                    graph_view::show_toolbar(ui, &mut self.call_state);
                     let result = graph_view::show_canvas(
                         ui,
                         &self.data.graph_set.call_graph,
