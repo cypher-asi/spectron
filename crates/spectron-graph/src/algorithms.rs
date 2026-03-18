@@ -16,15 +16,15 @@ use spectron_core::ArchGraph;
 // find_paths
 // ---------------------------------------------------------------------------
 
-/// Find all paths from `from` to `to` using BFS, with a maximum depth limit.
+/// Find all simple paths from `from` to `to` via DFS, with a maximum depth
+/// limit.
 ///
 /// Returns a vector of paths, where each path is a vector of [`NodeIndex`]
 /// values starting at `from` and ending at `to`. If no path exists within
 /// the depth limit, an empty vector is returned.
 ///
-/// The search is breadth-first, so shorter paths are discovered first.
-/// Self-loops and cycles are handled by never revisiting a node within
-/// a single path (no repeated vertices per path).
+/// Uses DFS with backtracking and a `HashSet` for O(1) visited checks,
+/// avoiding the per-step path cloning of a naive BFS approach.
 pub fn find_paths(
     graph: &ArchGraph,
     from: NodeIndex,
@@ -32,39 +32,43 @@ pub fn find_paths(
     max_depth: usize,
 ) -> Vec<Vec<NodeIndex>> {
     let mut results = Vec::new();
+    let mut path = vec![from];
+    let mut visited = HashSet::new();
+    visited.insert(from);
 
-    // BFS queue holds partial paths.
-    let mut queue: VecDeque<Vec<NodeIndex>> = VecDeque::new();
-    queue.push_back(vec![from]);
+    find_paths_dfs(graph, to, max_depth, &mut path, &mut visited, &mut results);
+    results
+}
 
-    while let Some(path) = queue.pop_front() {
-        let current = *path.last().expect("path should never be empty");
+fn find_paths_dfs(
+    graph: &ArchGraph,
+    to: NodeIndex,
+    max_depth: usize,
+    path: &mut Vec<NodeIndex>,
+    visited: &mut HashSet<NodeIndex>,
+    results: &mut Vec<Vec<NodeIndex>>,
+) {
+    let current = *path.last().expect("path should never be empty");
 
-        // If we reached the target, record the path.
-        if current == to && path.len() > 1 {
-            results.push(path);
-            continue;
-        }
+    if current == to && path.len() > 1 {
+        results.push(path.clone());
+        return;
+    }
 
-        // If we have reached the depth limit, do not extend further.
-        // Depth is measured as number of edges, which is path.len() - 1.
-        if path.len() - 1 >= max_depth {
-            continue;
-        }
+    if path.len() - 1 >= max_depth {
+        return;
+    }
 
-        // Extend the path through each outgoing neighbor.
-        for neighbor in graph.neighbors_directed(current, Direction::Outgoing) {
-            // Avoid revisiting nodes already in this path (prevents infinite loops).
-            // Exception: allow `to` even if it equals `from` (for paths of length > 0).
-            if neighbor == to || !path.contains(&neighbor) {
-                let mut new_path = path.clone();
-                new_path.push(neighbor);
-                queue.push_back(new_path);
+    for neighbor in graph.neighbors_directed(current, Direction::Outgoing) {
+        if neighbor == to || visited.insert(neighbor) {
+            path.push(neighbor);
+            find_paths_dfs(graph, to, max_depth, path, visited, results);
+            path.pop();
+            if neighbor != to {
+                visited.remove(&neighbor);
             }
         }
     }
-
-    results
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +200,96 @@ pub fn components(graph: &ArchGraph) -> Vec<Vec<NodeIndex>> {
         result.push(component);
     }
 
+    result
+}
+
+// ---------------------------------------------------------------------------
+// ancestors (reverse BFS)
+// ---------------------------------------------------------------------------
+
+/// Get all ancestors of a node using reverse BFS (incoming edges).
+///
+/// Returns all nodes from which `node` is reachable, **not** including `node`
+/// itself.
+pub fn ancestors(graph: &ArchGraph, node: NodeIndex) -> Vec<NodeIndex> {
+    let mut visited = HashSet::new();
+    let mut result = Vec::new();
+    let mut stack = Vec::new();
+
+    visited.insert(node);
+    stack.push(node);
+
+    while let Some(current) = stack.pop() {
+        for neighbor in graph.neighbors_directed(current, Direction::Incoming) {
+            if visited.insert(neighbor) {
+                result.push(neighbor);
+                stack.push(neighbor);
+            }
+        }
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// BFS within depth
+// ---------------------------------------------------------------------------
+
+/// Collect nodes reachable within `depth` hops, following edges in both
+/// directions. Includes `start` itself.
+pub fn neighborhood(
+    graph: &ArchGraph,
+    start: NodeIndex,
+    depth: usize,
+) -> HashSet<NodeIndex> {
+    let mut visited = HashSet::new();
+    visited.insert(start);
+    let mut frontier = vec![start];
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for &n in &frontier {
+            for neighbor in graph.neighbors_directed(n, Direction::Outgoing) {
+                if visited.insert(neighbor) {
+                    next.push(neighbor);
+                }
+            }
+            for neighbor in graph.neighbors_directed(n, Direction::Incoming) {
+                if visited.insert(neighbor) {
+                    next.push(neighbor);
+                }
+            }
+        }
+        frontier = next;
+    }
+    visited
+}
+
+// ---------------------------------------------------------------------------
+// find_cycles (Tarjan SCC)
+// ---------------------------------------------------------------------------
+
+/// Find all strongly connected components with more than one node (cycles).
+///
+/// Uses petgraph's `tarjan_scc` under the hood.
+pub fn find_cycles(graph: &ArchGraph) -> Vec<Vec<NodeIndex>> {
+    petgraph::algo::tarjan_scc(graph)
+        .into_iter()
+        .filter(|scc| scc.len() > 1)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// degree_centrality
+// ---------------------------------------------------------------------------
+
+/// Compute degree centrality (total in-degree + out-degree) for each node.
+pub fn degree_centrality(graph: &ArchGraph) -> HashMap<NodeIndex, usize> {
+    let mut result = HashMap::new();
+    for node in graph.node_indices() {
+        let in_deg = graph.neighbors_directed(node, Direction::Incoming).count();
+        let out_deg = graph.neighbors_directed(node, Direction::Outgoing).count();
+        result.insert(node, in_deg + out_deg);
+    }
     result
 }
 

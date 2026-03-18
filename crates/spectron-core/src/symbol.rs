@@ -80,7 +80,7 @@ pub enum SymbolKind {
 // ---------------------------------------------------------------------------
 
 /// The visibility of a symbol in Rust source code.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Visibility {
     /// `pub`
     Public,

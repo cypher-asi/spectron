@@ -1,7 +1,10 @@
 //! Inspector panel: detailed view for a selected graph node.
 
 use egui::{Color32, RichText, Ui};
-use spectron_core::{CrateId, CrateType, GraphNode, ModuleId, SymbolId, SymbolKind, Visibility};
+use petgraph::graph::{EdgeIndex, NodeIndex};
+use spectron_core::{
+    CrateId, CrateType, GraphNode, ModuleId, RelationshipKind, SymbolId, SymbolKind, Visibility,
+};
 
 use crate::ProjectData;
 
@@ -22,6 +25,7 @@ pub enum InspectorTarget {
     Symbol(SymbolId),
     Module(ModuleId),
     Crate(CrateId),
+    Edge(EdgeIndex),
 }
 
 impl InspectorTarget {
@@ -35,6 +39,12 @@ impl InspectorTarget {
     }
 }
 
+/// Result of inspector actions.
+pub struct InspectorAction {
+    pub navigate_to: Option<SymbolId>,
+    pub focus_node: Option<NodeIndex>,
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -45,13 +55,57 @@ pub fn show_inspector(
     data: &ProjectData,
     callers_clicked: &mut Option<SymbolId>,
 ) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| match target {
-            InspectorTarget::Symbol(id) => show_symbol(ui, *id, data, callers_clicked),
-            InspectorTarget::Module(id) => show_module(ui, *id, data),
-            InspectorTarget::Crate(id) => show_crate(ui, *id, data),
-        });
+    match target {
+        InspectorTarget::Symbol(id) => show_symbol(ui, *id, data, callers_clicked),
+        InspectorTarget::Module(id) => show_module(ui, *id, data),
+        InspectorTarget::Crate(id) => show_crate(ui, *id, data),
+        InspectorTarget::Edge(eidx) => show_edge(ui, *eidx, data),
+    }
+}
+
+/// Show inspector with focus action support.
+pub fn show_inspector_with_actions(
+    ui: &mut Ui,
+    target: &InspectorTarget,
+    data: &ProjectData,
+    callers_clicked: &mut Option<SymbolId>,
+) -> Option<NodeIndex> {
+    let mut focus_request = None;
+
+    match target {
+        InspectorTarget::Symbol(id) => {
+            show_symbol(ui, *id, data, callers_clicked);
+            if let Some(&ni) = data.graph_set.index.symbol_nodes.get(id) {
+                ui.add_space(4.0);
+                if ui.small_button("Focus on this node").clicked() {
+                    focus_request = Some(ni);
+                }
+            }
+        }
+        InspectorTarget::Module(id) => {
+            show_module(ui, *id, data);
+            if let Some(&ni) = data.graph_set.index.module_nodes.get(id) {
+                ui.add_space(4.0);
+                if ui.small_button("Focus on this node").clicked() {
+                    focus_request = Some(ni);
+                }
+            }
+        }
+        InspectorTarget::Crate(id) => {
+            show_crate(ui, *id, data);
+            if let Some(&ni) = data.graph_set.index.crate_nodes.get(id) {
+                ui.add_space(4.0);
+                if ui.small_button("Focus on this node").clicked() {
+                    focus_request = Some(ni);
+                }
+            }
+        }
+        InspectorTarget::Edge(eidx) => {
+            show_edge(ui, *eidx, data);
+        }
+    }
+
+    focus_request
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +309,7 @@ fn show_module(ui: &mut Ui, mid: ModuleId, data: &ProjectData) {
 // ---------------------------------------------------------------------------
 
 fn show_crate(ui: &mut Ui, cid: CrateId, data: &ProjectData) {
-    let Some(c) = data.crates.iter().find(|c| c.id == cid) else {
+    let Some(c) = data.crate_index.get(&cid).and_then(|&i| data.crates.get(i)) else {
         ui.label("Crate not found.");
         return;
     };
@@ -287,6 +341,73 @@ fn show_crate(ui: &mut Ui, cid: CrateId, data: &ProjectData) {
         for dep in &c.dependencies {
             ui.label(RichText::new(dep).monospace().small());
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge inspector
+// ---------------------------------------------------------------------------
+
+fn show_edge(ui: &mut Ui, eidx: EdgeIndex, data: &ProjectData) {
+    let graph = &data.graph_set.structure_graph;
+    let Some(edge) = graph.edge_weight(eidx) else {
+        ui.label("Edge not found.");
+        return;
+    };
+    let Some((src, tgt)) = graph.edge_endpoints(eidx) else {
+        ui.label("Edge endpoints not found.");
+        return;
+    };
+
+    let kind_label = format!("{}", edge.kind);
+    ui.label(RichText::new(&kind_label).heading().strong());
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    egui::Grid::new("edge_info")
+        .num_columns(2)
+        .spacing([24.0, 4.0])
+        .show(ui, |ui| {
+            row(ui, "Kind", &kind_label);
+            row(ui, "Weight", &format!("{:.2}", edge.weight));
+            row(ui, "Source", &format!("{}", graph[src]));
+            row(ui, "Target", &format!("{}", graph[tgt]));
+        });
+
+    // For Calls edges: list call site info if available
+    if edge.kind == RelationshipKind::Calls {
+        if let (GraphNode::Symbol(src_sid), GraphNode::Symbol(tgt_sid)) =
+            (&graph[src], &graph[tgt])
+        {
+            if let Some(callees) = data.graph_set.call_graph_data.callees.get(src_sid) {
+                if callees.contains(tgt_sid) {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    let src_name = data.symbols.get(src_sid).map_or("?", |s| &s.name);
+                    let tgt_name = data.symbols.get(tgt_sid).map_or("?", |s| &s.name);
+                    ui.label(
+                        RichText::new(format!("{} calls {}", src_name, tgt_name))
+                            .small(),
+                    );
+                }
+            }
+        }
+    }
+
+    // Count parallel edges between same endpoints
+    let parallel = graph
+        .edges_connecting(src, tgt)
+        .chain(graph.edges_connecting(tgt, src))
+        .count();
+    if parallel > 1 {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(format!("{} edges between these nodes", parallel))
+                .small()
+                .color(DIM),
+        );
     }
 }
 

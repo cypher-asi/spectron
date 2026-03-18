@@ -10,7 +10,8 @@ pub mod cfg;
 
 // Re-export algorithm utilities at the crate root for convenience.
 pub use algorithms::{
-    components, descendants, find_paths, reachable_subgraph, DataFlowInfo,
+    ancestors, components, degree_centrality, descendants, find_cycles, find_paths,
+    neighborhood, reachable_subgraph, DataFlowInfo,
 };
 
 // Re-export CFG types at the crate root for convenience.

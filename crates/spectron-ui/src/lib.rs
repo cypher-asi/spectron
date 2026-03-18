@@ -1,5 +1,6 @@
 //! spectron-ui: interactive visual codebase explorer.
 
+pub mod filter_panel;
 pub mod graph_view;
 pub mod inspector;
 pub mod layout;
@@ -8,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use egui::{Color32, RichText, Ui};
 use spectron_core::{
-    CrateInfo, CrateType, FileInfo, ModuleId, ModuleInfo, ProjectInfo,
+    CrateId, CrateInfo, CrateType, FileId, FileInfo, ModuleId, ModuleInfo, ProjectInfo,
     Symbol, SymbolId, SymbolKind,
 };
 use spectron_graph::GraphSet;
@@ -40,6 +41,12 @@ pub struct ProjectData {
     pub symbols: HashMap<SymbolId, Symbol>,
     pub graph_set: GraphSet,
     pub analysis: spectron_analysis::AnalysisOutput,
+    /// Reverse mapping: module -> owning crate.
+    pub module_to_crate: HashMap<ModuleId, CrateId>,
+    /// O(1) lookup from CrateId to index in `crates` vec.
+    pub crate_index: HashMap<CrateId, usize>,
+    /// O(1) lookup from FileId to index in `files` vec.
+    pub file_index: HashMap<FileId, usize>,
 }
 
 impl ProjectData {
@@ -53,6 +60,22 @@ impl ProjectData {
         analysis: spectron_analysis::AnalysisOutput,
     ) -> Self {
         let total_lines = files.iter().map(|f| f.line_count).sum();
+        let mut module_to_crate = HashMap::new();
+        for krate in &crates {
+            for &mid in &krate.module_ids {
+                module_to_crate.insert(mid, krate.id);
+            }
+        }
+        let crate_index: HashMap<CrateId, usize> = crates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.id, i))
+            .collect();
+        let file_index: HashMap<FileId, usize> = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.id, i))
+            .collect();
         Self {
             project,
             crates,
@@ -62,6 +85,9 @@ impl ProjectData {
             symbols,
             graph_set,
             analysis,
+            module_to_crate,
+            crate_index,
+            file_index,
         }
     }
 }
@@ -70,11 +96,14 @@ impl ProjectData {
 // View mode
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum ViewMode {
     Overview,
+    Architecture,
     StructureGraph,
     CallGraph,
+    CycleView,
+    HotspotView,
     ModuleDetail(ModuleId),
 }
 
@@ -132,35 +161,76 @@ impl eframe::App for SpectronApp {
             ui.add_space(6.0);
         });
 
-        // ---- Right inspector panel ----
+        // ---- Right panel: filter panel + inspector ----
         let mut nav_to_symbol: Option<SymbolId> = None;
+        let is_graph_view = matches!(
+            self.view_mode,
+            ViewMode::Architecture
+                | ViewMode::StructureGraph
+                | ViewMode::CallGraph
+                | ViewMode::CycleView
+                | ViewMode::HotspotView
+        );
 
-        if self.inspector_target.is_some() {
-            egui::SidePanel::right("inspector")
-                .default_width(280.0)
+        if is_graph_view || self.inspector_target.is_some() {
+            egui::SidePanel::right("right_panel")
+                .default_width(260.0)
                 .min_width(200.0)
                 .max_width(400.0)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Inspector").strong());
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.small_button("\u{2715}").clicked() {
-                                    self.inspector_target = None;
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if is_graph_view {
+                                let state = match self.view_mode {
+                                    ViewMode::CallGraph => &mut self.call_state,
+                                    _ => &mut self.structure_state,
+                                };
+                                let filters_changed = filter_panel::show_filter_panel(
+                                    ui,
+                                    state,
+                                    &self.data,
+                                    &self.entrypoints,
+                                );
+                                if filters_changed {
+                                    state.initialized = false;
                                 }
-                            },
-                        );
-                    });
-                    ui.separator();
-                    if let Some(ref target) = self.inspector_target {
-                        inspector::show_inspector(
-                            ui,
-                            target,
-                            &self.data,
-                            &mut nav_to_symbol,
-                        );
-                    }
+                            }
+
+                            if self.inspector_target.is_some() {
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+                                let mut close = false;
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("Inspector").strong());
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("\u{2715}").clicked() {
+                                                close = true;
+                                            }
+                                        },
+                                    );
+                                });
+                                if close {
+                                    self.inspector_target = None;
+                                } else {
+                                    ui.separator();
+                                    let target = self.inspector_target.as_ref().unwrap();
+                                    if let Some(focus_ni) =
+                                        inspector::show_inspector_with_actions(
+                                            ui,
+                                            target,
+                                            &self.data,
+                                            &mut nav_to_symbol,
+                                        )
+                                    {
+                                        self.structure_state.focus_node = Some(focus_ni);
+                                    }
+                                }
+                            }
+                        });
                 });
         }
 
@@ -185,8 +255,35 @@ impl eframe::App for SpectronApp {
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label("Filter:");
-                    ui.text_edit_singleline(&mut self.search);
+                    ui.label("Search:");
+                    let resp = ui.text_edit_singleline(&mut self.search);
+                    if resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        && !self.search.is_empty()
+                    {
+                        let query = self.search.to_lowercase();
+                        for (sid, sym) in &self.data.symbols {
+                            if sym.name.to_lowercase().contains(&query) {
+                                if let Some(&ni) =
+                                    self.data.graph_set.index.symbol_nodes.get(sid)
+                                {
+                                    self.structure_state.focus_node = Some(ni);
+                                    self.structure_state.selected = Some(ni);
+                                    self.inspector_target =
+                                        Some(InspectorTarget::Symbol(*sid));
+                                    if !matches!(
+                                        self.view_mode,
+                                        ViewMode::StructureGraph
+                                            | ViewMode::Architecture
+                                    ) {
+                                        self.view_mode = ViewMode::StructureGraph;
+                                    }
+                                    break;
+                                }
+                                break;
+                            }
+                        }
+                    }
                 });
                 ui.separator();
 
@@ -277,6 +374,15 @@ impl eframe::App for SpectronApp {
                 }
                 if ui
                     .selectable_label(
+                        self.view_mode == ViewMode::Architecture,
+                        RichText::new("Architecture"),
+                    )
+                    .clicked()
+                {
+                    self.view_mode = ViewMode::Architecture;
+                }
+                if ui
+                    .selectable_label(
                         self.view_mode == ViewMode::StructureGraph,
                         RichText::new("Structure"),
                     )
@@ -293,13 +399,31 @@ impl eframe::App for SpectronApp {
                 {
                     self.view_mode = ViewMode::CallGraph;
                 }
+                if ui
+                    .selectable_label(
+                        self.view_mode == ViewMode::CycleView,
+                        RichText::new("Cycles"),
+                    )
+                    .clicked()
+                {
+                    self.view_mode = ViewMode::CycleView;
+                }
+                if ui
+                    .selectable_label(
+                        self.view_mode == ViewMode::HotspotView,
+                        RichText::new("Hotspots"),
+                    )
+                    .clicked()
+                {
+                    self.view_mode = ViewMode::HotspotView;
+                }
                 if matches!(self.view_mode, ViewMode::ModuleDetail(_)) {
                     let _ = ui.selectable_label(true, RichText::new("Module"));
                 }
             });
             ui.separator();
 
-            match self.view_mode.clone() {
+            match self.view_mode {
                 ViewMode::Overview => {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -307,7 +431,7 @@ impl eframe::App for SpectronApp {
                             show_overview(ui, &self.data);
                         });
                 }
-                ViewMode::StructureGraph => {
+                ViewMode::Architecture | ViewMode::StructureGraph | ViewMode::CycleView | ViewMode::HotspotView => {
                     graph_view::show_toolbar(ui, &mut self.structure_state);
                     let result = graph_view::show_canvas(
                         ui,
@@ -317,9 +441,11 @@ impl eframe::App for SpectronApp {
                         &self.entrypoints,
                     );
                     match result {
-                        ClickResult::NodeClicked(node) => {
+                        ClickResult::NodeClicked(ni) => {
                             self.inspector_target =
-                                InspectorTarget::from_graph_node(&node);
+                                InspectorTarget::from_graph_node(
+                                    &self.data.graph_set.structure_graph[ni],
+                                );
                         }
                         ClickResult::BackgroundClicked => {
                             self.inspector_target = None;
@@ -337,9 +463,11 @@ impl eframe::App for SpectronApp {
                         &self.entrypoints,
                     );
                     match result {
-                        ClickResult::NodeClicked(node) => {
+                        ClickResult::NodeClicked(ni) => {
                             self.inspector_target =
-                                InspectorTarget::from_graph_node(&node);
+                                InspectorTarget::from_graph_node(
+                                    &self.data.graph_set.call_graph[ni],
+                                );
                         }
                         ClickResult::BackgroundClicked => {
                             self.inspector_target = None;
@@ -439,19 +567,15 @@ fn show_module_node(
             }
         });
     } else {
-        let children_ids: Vec<ModuleId> = module.children.clone();
-        let sym_ids: Vec<SymbolId> = module.symbol_ids.clone();
-
         let header = egui::CollapsingHeader::new(RichText::new(name).color(GREEN))
             .id_source(format!("m{}", mid.0))
             .default_open(search.is_empty() && module.children.len() < 10);
 
         let resp = header.show(ui, |ui| {
-            // Child modules.
-            for cid in &children_ids {
+            for &cid in &module.children {
                 show_module_node(
                     ui,
-                    *cid,
+                    cid,
                     modules,
                     symbols,
                     select_module,
@@ -459,8 +583,7 @@ fn show_module_node(
                     search,
                 );
             }
-            // Symbols in this module.
-            for sid in &sym_ids {
+            for sid in &module.symbol_ids {
                 if let Some(sym) = symbols.get(sid) {
                     if !search.is_empty()
                         && !sym.name.to_lowercase().contains(search)
@@ -757,20 +880,32 @@ pub fn run(data: ProjectData) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
-            .with_inner_size([1400.0, 900.0]),
+            .with_inner_size([1400.0, 900.0])
+            .with_icon(egui::IconData::default()),
         ..Default::default()
     };
+
+    let crate_ids: Vec<CrateId> = data.crates.iter().map(|c| c.id).collect();
 
     eframe::run_native(
         &title,
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            let mut visuals = egui::Visuals::dark();
+            visuals.panel_fill = Color32::BLACK;
+            visuals.window_fill = Color32::BLACK;
+            visuals.extreme_bg_color = Color32::BLACK;
+            visuals.faint_bg_color = Color32::from_rgb(10, 10, 10);
+            cc.egui_ctx.set_visuals(visuals);
+            let mut structure_state = graph_view::GraphViewState::new_structure();
+            let mut call_state = graph_view::GraphViewState::new_call();
+            structure_state.init_crate_filters(&crate_ids);
+            call_state.init_crate_filters(&crate_ids);
             Ok(Box::new(SpectronApp {
                 data,
-                view_mode: ViewMode::Overview,
-                structure_state: graph_view::GraphViewState::new_structure(),
-                call_state: graph_view::GraphViewState::new_call(),
+                view_mode: ViewMode::Architecture,
+                structure_state,
+                call_state,
                 search: String::new(),
                 inspector_target: None,
                 entrypoints,

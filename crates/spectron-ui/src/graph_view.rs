@@ -1,33 +1,75 @@
 //! Interactive graph canvas with pan, zoom, node selection, and edge filtering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 use egui::{Color32, FontId, Pos2, RichText, Sense, Shape, Stroke, Ui, Vec2};
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+use petgraph::Direction;
 use spectron_core::{
-    ArchGraph, GraphNode, RelationshipKind, SymbolId, SymbolKind,
+    ArchGraph, CrateId, GraphNode, RelationshipKind, SymbolId, SymbolKind, Visibility,
 };
 
 use crate::ProjectData;
 
 // ---------------------------------------------------------------------------
-// Colors
+// Colors (pub for filter_panel)
 // ---------------------------------------------------------------------------
 
-const CRATE_COLOR: Color32 = Color32::from_rgb(110, 180, 255);
-const MODULE_COLOR: Color32 = Color32::from_rgb(160, 215, 140);
-const FUNCTION_COLOR: Color32 = Color32::from_rgb(255, 170, 100);
-const STRUCT_COLOR: Color32 = Color32::from_rgb(200, 165, 255);
-const TRAIT_COLOR: Color32 = Color32::from_rgb(100, 210, 210);
-const FILE_COLOR: Color32 = Color32::from_rgb(140, 140, 150);
-const DEFAULT_NODE_COLOR: Color32 = Color32::from_rgb(170, 170, 170);
+pub const CRATE_COLOR: Color32 = Color32::from_rgb(110, 180, 255);
+pub const MODULE_COLOR: Color32 = Color32::from_rgb(160, 215, 140);
+pub const FUNCTION_COLOR: Color32 = Color32::from_rgb(255, 170, 100);
+pub const STRUCT_COLOR: Color32 = Color32::from_rgb(200, 165, 255);
+pub const TRAIT_COLOR: Color32 = Color32::from_rgb(100, 210, 210);
+pub const FILE_COLOR: Color32 = Color32::from_rgb(140, 140, 150);
+pub const DEFAULT_NODE_COLOR: Color32 = Color32::from_rgb(170, 170, 170);
 
-const CONTAINS_EDGE: Color32 = Color32::from_rgb(80, 80, 80);
-const CALLS_EDGE: Color32 = Color32::from_rgb(255, 170, 100);
-const IMPORTS_EDGE: Color32 = Color32::from_rgb(110, 180, 255);
-const IMPLEMENTS_EDGE: Color32 = Color32::from_rgb(160, 215, 140);
-const DEPENDS_ON_EDGE: Color32 = Color32::from_rgb(255, 100, 100);
-const REFERENCES_EDGE: Color32 = Color32::from_rgb(150, 150, 150);
+pub const CONTAINS_EDGE: Color32 = Color32::from_rgb(80, 80, 80);
+pub const CALLS_EDGE: Color32 = Color32::from_rgb(255, 170, 100);
+pub const IMPORTS_EDGE: Color32 = Color32::from_rgb(110, 180, 255);
+pub const IMPLEMENTS_EDGE: Color32 = Color32::from_rgb(160, 215, 140);
+pub const DEPENDS_ON_EDGE: Color32 = Color32::from_rgb(255, 100, 100);
+pub const REFERENCES_EDGE: Color32 = Color32::from_rgb(150, 150, 150);
+
+// ---------------------------------------------------------------------------
+// Node type filter
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeTypeFilter {
+    Crate,
+    Module,
+    File,
+    Symbol,
+}
+
+const GRID_CELL: f32 = 50.0;
+
+// ---------------------------------------------------------------------------
+// Spatial grid for O(visible) viewport culling
+// ---------------------------------------------------------------------------
+
+struct SpatialGrid {
+    cells: HashMap<(i32, i32), Vec<NodeIndex>>,
+}
+
+impl SpatialGrid {
+    fn new() -> Self {
+        Self {
+            cells: HashMap::new(),
+        }
+    }
+
+    fn rebuild(&mut self, positions: &HashMap<NodeIndex, Vec2>) {
+        self.cells.clear();
+        for (&ni, &pos) in positions {
+            let cx = (pos.x / GRID_CELL).floor() as i32;
+            let cy = (pos.y / GRID_CELL).floor() as i32;
+            self.cells.entry((cx, cy)).or_default().push(ni);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -43,46 +85,133 @@ pub struct GraphViewState {
     dragging: Option<NodeIndex>,
     pub initialized: bool,
     pub edge_filters: HashMap<RelationshipKind, bool>,
+    pub node_type_filters: HashMap<NodeTypeFilter, bool>,
+    pub symbol_kind_filters: HashMap<SymbolKind, bool>,
+    pub visibility_filters: HashMap<Visibility, bool>,
+    pub crate_filters: HashMap<CrateId, bool>,
+    pub highlight_entrypoints_only: bool,
+    pub highlight_unsafe_only: bool,
+    pub highlight_flagged_only: bool,
+    pub hide_test_code: bool,
+    // Phase 3B: Focus / ego view
+    pub focus_node: Option<NodeIndex>,
+    pub focus_depth: usize,
+    // Phase 3D: Pin selection
+    pub pinned_nodes: HashSet<NodeIndex>,
+    // Phase 3A: Layout algorithm selector
+    pub layout_algorithm: LayoutAlgorithm,
+    layout: Option<crate::layout::LayoutState>,
+    grid: SpatialGrid,
+    label_cache: HashMap<NodeIndex, String>,
+}
+
+/// Layout algorithm selector.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LayoutAlgorithm {
+    ForceDirected,
+    Layered,
+}
+
+fn default_filters() -> (
+    HashMap<NodeTypeFilter, bool>,
+    HashMap<SymbolKind, bool>,
+    HashMap<Visibility, bool>,
+) {
+    let mut nt = HashMap::new();
+    nt.insert(NodeTypeFilter::Crate, true);
+    nt.insert(NodeTypeFilter::Module, true);
+    nt.insert(NodeTypeFilter::File, true);
+    nt.insert(NodeTypeFilter::Symbol, true);
+
+    let mut sk = HashMap::new();
+    sk.insert(SymbolKind::Function, true);
+    sk.insert(SymbolKind::Method, true);
+    sk.insert(SymbolKind::Struct, true);
+    sk.insert(SymbolKind::Enum, true);
+    sk.insert(SymbolKind::Trait, true);
+    sk.insert(SymbolKind::ImplBlock, true);
+    sk.insert(SymbolKind::Constant, true);
+    sk.insert(SymbolKind::Static, true);
+    sk.insert(SymbolKind::TypeAlias, true);
+
+    let mut vis = HashMap::new();
+    vis.insert(Visibility::Public, true);
+    vis.insert(Visibility::Crate, true);
+    vis.insert(Visibility::Restricted, true);
+    vis.insert(Visibility::Private, true);
+
+    (nt, sk, vis)
+}
+
+fn default_state(edge_filters: HashMap<RelationshipKind, bool>) -> GraphViewState {
+    let (node_type_filters, symbol_kind_filters, visibility_filters) = default_filters();
+    GraphViewState {
+        positions: HashMap::new(),
+        pan: Vec2::ZERO,
+        zoom: 1.0,
+        selected: None,
+        hovered: None,
+        dragging: None,
+        initialized: false,
+        edge_filters,
+        node_type_filters,
+        symbol_kind_filters,
+        visibility_filters,
+        crate_filters: HashMap::new(),
+        highlight_entrypoints_only: false,
+        highlight_unsafe_only: false,
+        highlight_flagged_only: false,
+        hide_test_code: true,
+        focus_node: None,
+        focus_depth: 1,
+        pinned_nodes: HashSet::new(),
+        layout_algorithm: LayoutAlgorithm::ForceDirected,
+        layout: None,
+        grid: SpatialGrid::new(),
+        label_cache: HashMap::new(),
+    }
 }
 
 impl GraphViewState {
+    /// Smart default: Crate nodes + DependsOn edges only (architecture view).
     pub fn new_structure() -> Self {
         let mut ef = HashMap::new();
         ef.insert(RelationshipKind::Contains, false);
-        ef.insert(RelationshipKind::Calls, true);
-        ef.insert(RelationshipKind::Imports, true);
-        ef.insert(RelationshipKind::Implements, true);
+        ef.insert(RelationshipKind::Calls, false);
+        ef.insert(RelationshipKind::Imports, false);
+        ef.insert(RelationshipKind::Implements, false);
         ef.insert(RelationshipKind::DependsOn, true);
         ef.insert(RelationshipKind::References, false);
-        Self {
-            positions: HashMap::new(),
-            pan: Vec2::ZERO,
-            zoom: 1.0,
-            selected: None,
-            hovered: None,
-            dragging: None,
-            initialized: false,
-            edge_filters: ef,
+
+        let mut nt = HashMap::new();
+        nt.insert(NodeTypeFilter::Crate, true);
+        nt.insert(NodeTypeFilter::Module, false);
+        nt.insert(NodeTypeFilter::File, false);
+        nt.insert(NodeTypeFilter::Symbol, false);
+
+        let (_, symbol_kind_filters, visibility_filters) = default_filters();
+        GraphViewState {
+            node_type_filters: nt,
+            symbol_kind_filters,
+            visibility_filters,
+            ..default_state(ef)
         }
     }
 
     pub fn new_call() -> Self {
         let mut ef = HashMap::new();
-        ef.insert(RelationshipKind::Contains, true);
+        ef.insert(RelationshipKind::Contains, false);
         ef.insert(RelationshipKind::Calls, true);
-        ef.insert(RelationshipKind::Imports, true);
-        ef.insert(RelationshipKind::Implements, true);
-        ef.insert(RelationshipKind::DependsOn, true);
-        ef.insert(RelationshipKind::References, true);
-        Self {
-            positions: HashMap::new(),
-            pan: Vec2::ZERO,
-            zoom: 1.0,
-            selected: None,
-            hovered: None,
-            dragging: None,
-            initialized: false,
-            edge_filters: ef,
+        ef.insert(RelationshipKind::Imports, false);
+        ef.insert(RelationshipKind::Implements, false);
+        ef.insert(RelationshipKind::DependsOn, false);
+        ef.insert(RelationshipKind::References, false);
+        default_state(ef)
+    }
+
+    pub fn init_crate_filters(&mut self, crate_ids: &[CrateId]) {
+        for &id in crate_ids {
+            self.crate_filters.entry(id).or_insert(true);
         }
     }
 }
@@ -93,7 +222,7 @@ impl GraphViewState {
 
 pub enum ClickResult {
     Nothing,
-    NodeClicked(GraphNode),
+    NodeClicked(NodeIndex),
     BackgroundClicked,
 }
 
@@ -116,6 +245,40 @@ pub fn show_toolbar(ui: &mut Ui, state: &mut GraphViewState) {
             ui.checkbox(checked, RichText::new(label).color(color).small());
         }
         ui.separator();
+
+        // Layout algorithm selector
+        ui.label("Layout:");
+        let layout_label = match state.layout_algorithm {
+            LayoutAlgorithm::ForceDirected => "Force",
+            LayoutAlgorithm::Layered => "Layered",
+        };
+        egui::ComboBox::from_id_source("layout_algo")
+            .selected_text(RichText::new(layout_label).small())
+            .width(70.0)
+            .show_ui(ui, |ui: &mut Ui| {
+                if ui
+                    .selectable_value(
+                        &mut state.layout_algorithm,
+                        LayoutAlgorithm::ForceDirected,
+                        "Force Directed",
+                    )
+                    .changed()
+                {
+                    state.initialized = false;
+                }
+                if ui
+                    .selectable_value(
+                        &mut state.layout_algorithm,
+                        LayoutAlgorithm::Layered,
+                        "Layered (Sugiyama)",
+                    )
+                    .changed()
+                {
+                    state.initialized = false;
+                }
+            });
+
+        ui.separator();
         if ui.small_button("Reset View").clicked() {
             state.pan = Vec2::ZERO;
             state.zoom = 1.0;
@@ -123,7 +286,223 @@ pub fn show_toolbar(ui: &mut Ui, state: &mut GraphViewState) {
         if ui.small_button("Re-layout").clicked() {
             state.initialized = false;
         }
+        if state.focus_node.is_some() && ui.small_button("Clear Focus").clicked() {
+            state.focus_node = None;
+        }
+        if !state.pinned_nodes.is_empty() && ui.small_button("Clear Pins").clicked() {
+            state.pinned_nodes.clear();
+        }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Node visibility
+// ---------------------------------------------------------------------------
+
+/// Structural visibility: node type, crate, symbol kind, visibility, test code filters.
+/// Highlight modes (unsafe/flagged/entrypoints) are handled separately as dimming.
+fn is_node_visible(
+    node: &GraphNode,
+    state: &GraphViewState,
+    data: &ProjectData,
+) -> bool {
+    let type_key = match node {
+        GraphNode::Crate(_) => NodeTypeFilter::Crate,
+        GraphNode::Module(_) => NodeTypeFilter::Module,
+        GraphNode::File(_) => NodeTypeFilter::File,
+        GraphNode::Symbol(_) => NodeTypeFilter::Symbol,
+    };
+    if !state
+        .node_type_filters
+        .get(&type_key)
+        .copied()
+        .unwrap_or(true)
+    {
+        return false;
+    }
+
+    match node {
+        GraphNode::Crate(cid) => {
+            if !state.crate_filters.get(cid).copied().unwrap_or(true) {
+                return false;
+            }
+        }
+        GraphNode::Module(mid) => {
+            if let Some(cid) = data.module_to_crate.get(mid) {
+                if !state.crate_filters.get(cid).copied().unwrap_or(true) {
+                    return false;
+                }
+            }
+        }
+        GraphNode::Symbol(sid) => {
+            if let Some(sym) = data.symbols.get(sid) {
+                if let Some(cid) = data.module_to_crate.get(&sym.module_id) {
+                    if !state.crate_filters.get(cid).copied().unwrap_or(true) {
+                        return false;
+                    }
+                }
+                if !state
+                    .symbol_kind_filters
+                    .get(&sym.kind)
+                    .copied()
+                    .unwrap_or(true)
+                {
+                    return false;
+                }
+                if !state
+                    .visibility_filters
+                    .get(&sym.visibility)
+                    .copied()
+                    .unwrap_or(true)
+                {
+                    return false;
+                }
+                if state.hide_test_code && sym.attributes.is_test {
+                    return false;
+                }
+            }
+        }
+        GraphNode::File(_) => {}
+    }
+
+    true
+}
+
+/// Returns true if the node is "highlighted" (should be bright) when a highlight
+/// isolation mode is active. Nodes that return false are dimmed, not hidden.
+fn is_node_highlighted(
+    node: &GraphNode,
+    state: &GraphViewState,
+    data: &ProjectData,
+    entrypoints: &HashSet<SymbolId>,
+) -> bool {
+    let any_highlight =
+        state.highlight_entrypoints_only || state.highlight_unsafe_only || state.highlight_flagged_only;
+    if !any_highlight {
+        return true;
+    }
+
+    let GraphNode::Symbol(sid) = node else {
+        return false;
+    };
+
+    if state.highlight_entrypoints_only && !entrypoints.contains(sid) {
+        return false;
+    }
+    if state.highlight_unsafe_only {
+        let is_unsafe = data
+            .symbols
+            .get(sid)
+            .map_or(false, |s| s.attributes.is_unsafe || s.attributes.has_unsafe_block);
+        if !is_unsafe {
+            return false;
+        }
+    }
+    if state.highlight_flagged_only {
+        use spectron_analysis::FlagTarget;
+        let is_flagged = data
+            .analysis
+            .complexity_flags
+            .iter()
+            .any(|f| matches!(&f.target, FlagTarget::Symbol(s) if s == sid));
+        if !is_flagged {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn compute_visible_nodes(
+    graph: &ArchGraph,
+    state: &GraphViewState,
+    data: &ProjectData,
+) -> HashSet<NodeIndex> {
+    graph
+        .node_indices()
+        .filter(|&ni| is_node_visible(&graph[ni], state, data))
+        .collect()
+}
+
+/// Compute the set of nodes within `depth` hops of `center` (both directions).
+fn compute_ego_set(
+    graph: &ArchGraph,
+    center: NodeIndex,
+    depth: usize,
+    visible: &HashSet<NodeIndex>,
+) -> HashSet<NodeIndex> {
+    let mut result = HashSet::new();
+    result.insert(center);
+    let mut frontier = vec![center];
+    for _ in 0..depth {
+        let mut next_frontier = Vec::new();
+        for &n in &frontier {
+            for neighbor in graph.neighbors_directed(n, Direction::Outgoing) {
+                if visible.contains(&neighbor) && result.insert(neighbor) {
+                    next_frontier.push(neighbor);
+                }
+            }
+            for neighbor in graph.neighbors_directed(n, Direction::Incoming) {
+                if visible.contains(&neighbor) && result.insert(neighbor) {
+                    next_frontier.push(neighbor);
+                }
+            }
+        }
+        frontier = next_frontier;
+    }
+    result
+}
+
+/// Collect the 1-hop neighbor set of `center` (both directions).
+fn collect_neighbors(graph: &ArchGraph, center: NodeIndex) -> HashSet<NodeIndex> {
+    let mut set = HashSet::new();
+    set.insert(center);
+    for neighbor in graph.neighbors_directed(center, Direction::Outgoing) {
+        set.insert(neighbor);
+    }
+    for neighbor in graph.neighbors_directed(center, Direction::Incoming) {
+        set.insert(neighbor);
+    }
+    set
+}
+
+/// Compute per-node alpha multiplier based on highlight, focus, hover, and pin state.
+fn compute_node_alpha(
+    node_idx: NodeIndex,
+    graph: &ArchGraph,
+    state: &GraphViewState,
+    data: &ProjectData,
+    entrypoints: &HashSet<SymbolId>,
+    hover_neighbors: &Option<HashSet<NodeIndex>>,
+    focus_set: &Option<HashSet<NodeIndex>>,
+) -> f32 {
+    let mut alpha = 1.0_f32;
+
+    if !is_node_highlighted(&graph[node_idx], state, data, entrypoints) {
+        alpha = alpha.min(0.15);
+    }
+
+    if let Some(ref fset) = focus_set {
+        if !fset.contains(&node_idx) {
+            alpha = alpha.min(0.12);
+        }
+    }
+
+    if !state.pinned_nodes.is_empty() && !state.pinned_nodes.contains(&node_idx) {
+        alpha = alpha.min(0.15);
+    }
+
+    if let Some(ref hn) = hover_neighbors {
+        if !hn.contains(&node_idx) {
+            alpha = alpha.min(0.20);
+        }
+    }
+
+    alpha
+}
+
+fn with_alpha(c: Color32, alpha: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
 }
 
 // ---------------------------------------------------------------------------
@@ -144,13 +523,54 @@ pub fn show_canvas(
         return ClickResult::Nothing;
     }
 
+    let visible = compute_visible_nodes(graph, state, data);
+
+    if visible.is_empty() {
+        ui.centered_and_justified(|ui| {
+            ui.label("All nodes hidden by current filters.");
+        });
+        return ClickResult::Nothing;
+    }
+
+    // --- Initialisation / re-layout ---
     if !state.initialized {
         let size = ui.available_size();
         let w = size.x.max(800.0);
         let h = size.y.max(600.0);
-        state.positions = crate::layout::compute_layout(graph, w, h);
+
+        match state.layout_algorithm {
+            LayoutAlgorithm::ForceDirected => {
+                let layout = crate::layout::LayoutState::new_filtered(graph, w, h, &visible);
+                state.positions = layout.to_position_map();
+                state.layout = Some(layout);
+            }
+            LayoutAlgorithm::Layered => {
+                state.positions =
+                    crate::layout::compute_layered_layout(graph, w, h, &visible);
+                state.layout = None;
+            }
+        }
+
+        state.label_cache.clear();
+        for &node_idx in &visible {
+            let node = &graph[node_idx];
+            state.label_cache.insert(node_idx, node_label(node, data));
+        }
+
         state.initialized = true;
     }
+
+    // --- Incremental layout stepping (force-directed only) ---
+    if let Some(ref mut layout) = state.layout {
+        if !layout.done {
+            layout.step(graph);
+            state.positions = layout.to_position_map();
+            ui.ctx().request_repaint();
+        }
+    }
+
+    // --- Rebuild spatial grid from current positions ---
+    state.grid.rebuild(&state.positions);
 
     let (response, painter) =
         ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -172,13 +592,65 @@ pub fn show_canvas(
     }
 
     // Coordinate transforms.
+    let zoom = state.zoom;
+    let pan = state.pan;
+    let rect_min = rect.min.to_vec2();
+
     let world_to_screen = |world: Vec2| -> Pos2 {
-        let s = world * state.zoom + state.pan + rect.min.to_vec2();
+        let s = world * zoom + pan + rect_min;
         Pos2::new(s.x, s.y)
     };
 
-    // --- Draw edges ---
+    let screen_to_world = |screen: Pos2| -> Vec2 {
+        (screen.to_vec2() - rect_min - pan) / zoom
+    };
+
+    // --- Precompute hover detection (first pass over nodes to find hovered) ---
+    state.hovered = None;
+    let pointer = response.hover_pos();
     let expanded = rect.expand(60.0);
+
+    {
+        let world_min = screen_to_world(expanded.min);
+        let world_max = screen_to_world(expanded.max);
+        let cx_min = (world_min.x / GRID_CELL).floor() as i32;
+        let cy_min = (world_min.y / GRID_CELL).floor() as i32;
+        let cx_max = (world_max.x / GRID_CELL).floor() as i32;
+        let cy_max = (world_max.y / GRID_CELL).floor() as i32;
+
+        for gx in cx_min..=cx_max {
+            for gy in cy_min..=cy_max {
+                let Some(nodes) = state.grid.cells.get(&(gx, gy)) else {
+                    continue;
+                };
+                for &node_idx in nodes {
+                    if !visible.contains(&node_idx) {
+                        continue;
+                    }
+                    let Some(&world_pos) = state.positions.get(&node_idx) else {
+                        continue;
+                    };
+                    let screen_pos = world_to_screen(world_pos);
+                    let radius = node_radius(&graph[node_idx], data) * zoom;
+                    if pointer.map_or(false, |p| p.distance(screen_pos) < radius + 3.0) {
+                        state.hovered = Some(node_idx);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Compute dimming contexts ---
+    let hover_neighbors: Option<HashSet<NodeIndex>> = state
+        .hovered
+        .map(|h| collect_neighbors(graph, h));
+
+    let focus_set: Option<HashSet<NodeIndex>> = state
+        .focus_node
+        .filter(|n| visible.contains(n))
+        .map(|n| compute_ego_set(graph, n, state.focus_depth, &visible));
+
+    // --- Draw edges ---
     for edge_idx in graph.edge_indices() {
         let edge = &graph[edge_idx];
         if !state.edge_filters.get(&edge.kind).copied().unwrap_or(true) {
@@ -187,6 +659,9 @@ pub fn show_canvas(
         let Some((src, tgt)) = graph.edge_endpoints(edge_idx) else {
             continue;
         };
+        if !visible.contains(&src) || !visible.contains(&tgt) {
+            continue;
+        }
         let (Some(&sp), Some(&tp)) = (state.positions.get(&src), state.positions.get(&tgt))
         else {
             continue;
@@ -199,12 +674,25 @@ pub fn show_canvas(
             continue;
         }
 
-        let color = edge_color(&edge.kind);
-        let width = if edge.kind == RelationshipKind::Contains {
+        let src_alpha = compute_node_alpha(
+            src, graph, state, data, entrypoints, &hover_neighbors, &focus_set,
+        );
+        let tgt_alpha = compute_node_alpha(
+            tgt, graph, state, data, entrypoints, &hover_neighbors, &focus_set,
+        );
+        let edge_alpha = src_alpha.min(tgt_alpha);
+
+        let base_color = edge_color(&edge.kind);
+        let weight_alpha = (60.0 + (edge.weight.min(5.0) / 5.0) * 160.0) / 255.0;
+        let final_alpha = edge_alpha * weight_alpha;
+        let color = with_alpha(base_color, final_alpha);
+
+        let base_width = if edge.kind == RelationshipKind::Contains {
             0.5
         } else {
-            1.2
-        } * state.zoom.sqrt();
+            1.0 + edge.weight.ln().max(0.0) * 0.5
+        };
+        let width = base_width.min(6.0) * zoom.sqrt();
 
         let dir = to - from;
         let dist = dir.length();
@@ -213,16 +701,53 @@ pub fn show_canvas(
         }
         let dir_n = dir / dist;
 
-        let src_r = node_radius(&graph[src], data) * state.zoom;
-        let tgt_r = node_radius(&graph[tgt], data) * state.zoom;
+        let src_r = node_radius(&graph[src], data) * zoom;
+        let tgt_r = node_radius(&graph[tgt], data) * zoom;
         let line_start = from + dir_n * src_r;
         let tip = to - dir_n * tgt_r;
 
-        painter.line_segment([line_start, tip], Stroke::new(width, color));
-
-        if dist > 40.0 * state.zoom {
+        // Check for parallel edges and apply curvature
+        let parallel_count = graph
+            .edges_connecting(src, tgt)
+            .chain(graph.edges_connecting(tgt, src))
+            .count();
+        if parallel_count > 1 {
+            let edge_ordinal = graph
+                .edges_connecting(src, tgt)
+                .chain(graph.edges_connecting(tgt, src))
+                .position(|e| e.id() == edge_idx)
+                .unwrap_or(0);
+            let offset = (edge_ordinal as f32 - (parallel_count as f32 - 1.0) / 2.0) * 12.0 * zoom;
             let perp = egui::vec2(-dir_n.y, dir_n.x);
-            let arrow = 7.0 * state.zoom.sqrt();
+            let mid = Pos2::new(
+                (line_start.x + tip.x) / 2.0 + perp.x * offset,
+                (line_start.y + tip.y) / 2.0 + perp.y * offset,
+            );
+            let cp1 = Pos2::new(
+                line_start.x + (mid.x - line_start.x) * 0.5,
+                line_start.y + (mid.y - line_start.y) * 0.5,
+            );
+            let cp2 = Pos2::new(
+                tip.x + (mid.x - tip.x) * 0.5,
+                tip.y + (mid.y - tip.y) * 0.5,
+            );
+            painter.add(Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke(
+                [line_start, cp1, cp2, tip],
+                false,
+                Color32::TRANSPARENT,
+                Stroke::new(width, color),
+            )));
+        } else {
+            painter.line_segment([line_start, tip], Stroke::new(width, color));
+        }
+
+        // Arrowheads only when the edge or endpoints are hovered
+        let show_arrow = state.hovered == Some(src)
+            || state.hovered == Some(tgt)
+            || hover_neighbors.as_ref().map_or(false, |hn| hn.contains(&src) && hn.contains(&tgt));
+        if show_arrow && dist > 40.0 * zoom {
+            let perp = egui::vec2(-dir_n.y, dir_n.x);
+            let arrow = 7.0 * zoom.sqrt();
             let p1 = tip;
             let p2 = tip - dir_n * arrow + perp * arrow * 0.4;
             let p3 = tip - dir_n * arrow - perp * arrow * 0.4;
@@ -234,62 +759,88 @@ pub fn show_canvas(
         }
     }
 
-    // --- Draw nodes and detect hover ---
-    state.hovered = None;
-    let pointer = response.hover_pos();
+    // --- Draw nodes via spatial grid ---
+    let world_min = screen_to_world(expanded.min);
+    let world_max = screen_to_world(expanded.max);
+    let cx_min = (world_min.x / GRID_CELL).floor() as i32;
+    let cy_min = (world_min.y / GRID_CELL).floor() as i32;
+    let cx_max = (world_max.x / GRID_CELL).floor() as i32;
+    let cy_max = (world_max.y / GRID_CELL).floor() as i32;
 
-    for node_idx in graph.node_indices() {
-        let Some(&world_pos) = state.positions.get(&node_idx) else {
-            continue;
-        };
-        let screen_pos = world_to_screen(world_pos);
-        if !expanded.contains(screen_pos) {
-            continue;
-        }
+    for gx in cx_min..=cx_max {
+        for gy in cy_min..=cy_max {
+            let Some(nodes) = state.grid.cells.get(&(gx, gy)) else {
+                continue;
+            };
+            for &node_idx in nodes {
+                if !visible.contains(&node_idx) {
+                    continue;
+                }
+                let Some(&world_pos) = state.positions.get(&node_idx) else {
+                    continue;
+                };
+                let screen_pos = world_to_screen(world_pos);
+                if !expanded.contains(screen_pos) {
+                    continue;
+                }
 
-        let node = &graph[node_idx];
-        let radius = node_radius(node, data) * state.zoom;
-        let color = node_color(node, data);
-        let is_hovered =
-            pointer.map_or(false, |p| p.distance(screen_pos) < radius + 3.0);
-        if is_hovered {
-            state.hovered = Some(node_idx);
-        }
-        let is_selected = state.selected == Some(node_idx);
-        let is_entry =
-            matches!(node, GraphNode::Symbol(sid) if entrypoints.contains(sid));
+                let node = &graph[node_idx];
+                let radius = node_radius(node, data) * zoom;
+                let base_color = node_color(node, data);
+                let is_hovered = state.hovered == Some(node_idx);
+                let is_selected = state.selected == Some(node_idx);
+                let is_pinned = state.pinned_nodes.contains(&node_idx);
+                let is_entry =
+                    matches!(node, GraphNode::Symbol(sid) if entrypoints.contains(sid));
 
-        // Entrypoint glow.
-        if is_entry {
-            painter.circle_filled(
-                screen_pos,
-                radius + 4.0 * state.zoom,
-                Color32::from_rgba_unmultiplied(255, 200, 50, 50),
-            );
-        }
-        // Selection ring.
-        if is_selected {
-            painter.circle_stroke(
-                screen_pos,
-                radius + 2.5,
-                Stroke::new(2.0, Color32::WHITE),
-            );
-        }
-        // Body.
-        let fill = if is_hovered { lighten(color, 35) } else { color };
-        painter.circle_filled(screen_pos, radius, fill);
+                let alpha = compute_node_alpha(
+                    node_idx, graph, state, data, entrypoints, &hover_neighbors, &focus_set,
+                );
 
-        // Label (only when zoomed in enough).
-        if state.zoom > 0.35 {
-            let font = FontId::proportional((10.0 * state.zoom.sqrt()).clamp(7.0, 16.0));
-            let text_pos = Pos2::new(screen_pos.x, screen_pos.y + radius + 3.0);
-            painter.text(
-                text_pos,
-                egui::Align2::CENTER_TOP,
-                node_label(node, data),
-                font,
-                Color32::from_rgb(220, 220, 220),
-            );
+                if is_entry {
+                    painter.circle_filled(
+                        screen_pos,
+                        radius + 4.0 * zoom,
+                        with_alpha(Color32::from_rgb(255, 200, 50), alpha * 0.2),
+                    );
+                }
+                if is_selected {
+                    painter.circle_stroke(
+                        screen_pos,
+                        radius + 2.5,
+                        Stroke::new(2.0, Color32::WHITE),
+                    );
+                }
+                if is_pinned {
+                    painter.circle_stroke(
+                        screen_pos,
+                        radius + 3.5,
+                        Stroke::new(1.5, Color32::from_rgb(255, 200, 50)),
+                    );
+                }
+                let color = with_alpha(
+                    if is_hovered { lighten(base_color, 35) } else { base_color },
+                    alpha,
+                );
+                painter.circle_filled(screen_pos, radius, color);
+
+                if zoom > 0.35 {
+                    let font =
+                        FontId::proportional((10.0 * zoom.sqrt()).clamp(7.0, 16.0));
+                    let text_pos = Pos2::new(screen_pos.x, screen_pos.y + radius + 3.0);
+                    let label = state
+                        .label_cache
+                        .get(&node_idx)
+                        .map_or("?", |s| s.as_str());
+                    painter.text(
+                        text_pos,
+                        egui::Align2::CENTER_TOP,
+                        label,
+                        font,
+                        with_alpha(Color32::from_rgb(220, 220, 220), alpha),
+                    );
+                }
+            }
         }
     }
 
@@ -315,7 +866,10 @@ pub fn show_canvas(
     if response.dragged() {
         if let Some(dragging) = state.dragging {
             if let Some(pos) = state.positions.get_mut(&dragging) {
-                *pos += response.drag_delta() / state.zoom;
+                *pos += response.drag_delta() / zoom;
+                if let Some(ref mut layout) = state.layout {
+                    layout.update_position(dragging, *pos);
+                }
             }
         } else {
             state.pan += response.drag_delta();
@@ -330,10 +884,19 @@ pub fn show_canvas(
     if response.clicked() {
         if let Some(hovered) = state.hovered {
             state.selected = Some(hovered);
-            return ClickResult::NodeClicked(graph[hovered].clone());
+            return ClickResult::NodeClicked(hovered);
         } else {
             state.selected = None;
             return ClickResult::BackgroundClicked;
+        }
+    }
+
+    // --- Interaction: secondary click (right click) for pin toggle ---
+    if response.secondary_clicked() {
+        if let Some(hovered) = state.hovered {
+            if !state.pinned_nodes.remove(&hovered) {
+                state.pinned_nodes.insert(hovered);
+            }
         }
     }
 
@@ -375,18 +938,18 @@ fn edge_color(kind: &RelationshipKind) -> Color32 {
 fn node_label(node: &GraphNode, data: &ProjectData) -> String {
     match node {
         GraphNode::Crate(id) => data
-            .crates
-            .iter()
-            .find(|c| c.id == *id)
+            .crate_index
+            .get(id)
+            .and_then(|&i| data.crates.get(i))
             .map_or("?".into(), |c| c.name.clone()),
         GraphNode::Module(id) => data
             .modules
             .get(id)
             .map_or("?".into(), |m| m.name.clone()),
         GraphNode::File(id) => data
-            .files
-            .iter()
-            .find(|f| f.id == *id)
+            .file_index
+            .get(id)
+            .and_then(|&i| data.files.get(i))
             .map_or("?".into(), |f| {
                 f.path
                     .file_name()
@@ -403,16 +966,27 @@ fn node_label(node: &GraphNode, data: &ProjectData) -> String {
 
 fn node_radius(node: &GraphNode, data: &ProjectData) -> f32 {
     match node {
-        GraphNode::Crate(_) => 16.0,
-        GraphNode::Module(_) => 12.0,
-        GraphNode::File(_) => 7.0,
-        GraphNode::Symbol(id) => {
-            if let Some(m) = data.analysis.symbol_metrics.get(id) {
-                (6.0 + (m.line_count as f32).ln().max(0.0) * 1.8).min(20.0)
-            } else {
-                8.0
-            }
+        GraphNode::Crate(id) => {
+            let module_count = data
+                .crate_index
+                .get(id)
+                .and_then(|&i| data.crates.get(i))
+                .map_or(1, |c| c.module_ids.len()) as f32;
+            (12.0 + module_count.sqrt() * 3.0).min(30.0)
         }
+        GraphNode::Module(id) => {
+            let sym_count = data.modules.get(id).map_or(1, |m| m.symbol_ids.len()) as f32;
+            (8.0 + sym_count.sqrt() * 2.0).min(22.0)
+        }
+        GraphNode::Symbol(id) => {
+            let fan_in = data
+                .analysis
+                .symbol_metrics
+                .get(id)
+                .map_or(0, |m| m.fan_in) as f32;
+            (5.0 + fan_in.sqrt() * 2.5).min(24.0)
+        }
+        GraphNode::File(_) => 7.0,
     }
 }
 
@@ -427,7 +1001,7 @@ fn lighten(c: Color32, amt: u8) -> Color32 {
 fn show_node_tooltip(ui: &mut Ui, node: &GraphNode, data: &ProjectData) {
     match node {
         GraphNode::Crate(id) => {
-            if let Some(c) = data.crates.iter().find(|c| c.id == *id) {
+            if let Some(c) = data.crate_index.get(id).and_then(|&i| data.crates.get(i)) {
                 ui.label(RichText::new(&c.name).strong());
                 ui.label(format!(
                     "Crate ({}) \u{2022} {} modules",
@@ -446,7 +1020,7 @@ fn show_node_tooltip(ui: &mut Ui, node: &GraphNode, data: &ProjectData) {
             }
         }
         GraphNode::File(id) => {
-            if let Some(f) = data.files.iter().find(|f| f.id == *id) {
+            if let Some(f) = data.file_index.get(id).and_then(|&i| data.files.get(i)) {
                 ui.label(RichText::new(f.path.display().to_string()).monospace());
                 ui.label(format!("{} lines", f.line_count));
             }
