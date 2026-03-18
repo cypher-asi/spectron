@@ -21,10 +21,11 @@ use crate::inspector::InspectorTarget;
 // Colors
 // ---------------------------------------------------------------------------
 
-const BLUE: Color32 = Color32::from_rgb(110, 180, 255);
-const ORANGE: Color32 = Color32::from_rgb(255, 170, 100);
-const GREEN: Color32 = Color32::from_rgb(160, 215, 140);
-const PURPLE: Color32 = Color32::from_rgb(200, 165, 255);
+const BLUE: Color32 = Color32::from_rgb(77, 84, 245); // #4D54F5
+const RED: Color32 = Color32::from_rgb(254, 75, 66); // #FE4B42
+const GREEN: Color32 = Color32::from_rgb(82, 242, 132); // #52F284
+const PURPLE: Color32 = Color32::from_rgb(182, 83, 249); // #B653F9
+const YELLOW_GREEN: Color32 = Color32::from_rgb(171, 240, 18); // #ABF012
 const DIM: Color32 = Color32::from_rgb(150, 150, 150);
 
 // ---------------------------------------------------------------------------
@@ -501,7 +502,7 @@ impl eframe::App for SpectronApp {
 fn crate_style(ct: &CrateType) -> (Color32, &'static str) {
     match ct {
         CrateType::Library => (BLUE, "lib"),
-        CrateType::Binary => (ORANGE, "bin"),
+        CrateType::Binary => (RED, "bin"),
     }
 }
 
@@ -681,7 +682,7 @@ fn show_overview(ui: &mut Ui, data: &ProjectData) {
         .show(ui, |ui| {
             stat_row(ui, "Crates", &data.crates.len().to_string(), Color32::WHITE);
             stat_row(ui, "  Libraries", &libs.to_string(), BLUE);
-            stat_row(ui, "  Binaries", &bins.to_string(), ORANGE);
+            stat_row(ui, "  Binaries", &bins.to_string(), RED);
             stat_row(
                 ui,
                 "Modules",
@@ -700,9 +701,9 @@ fn show_overview(ui: &mut Ui, data: &ProjectData) {
                 &data.symbols.len().to_string(),
                 Color32::WHITE,
             );
-            stat_row(ui, "  Functions", &fns.to_string(), ORANGE);
+            stat_row(ui, "  Functions", &fns.to_string(), RED);
             stat_row(ui, "  Structs", &structs.to_string(), PURPLE);
-            stat_row(ui, "  Traits", &traits.to_string(), Color32::from_rgb(100, 210, 210));
+            stat_row(ui, "  Traits", &traits.to_string(), YELLOW_GREEN);
             stat_row(
                 ui,
                 "Total Lines",
@@ -713,13 +714,13 @@ fn show_overview(ui: &mut Ui, data: &ProjectData) {
                 ui,
                 "Entrypoints",
                 &data.analysis.entrypoints.len().to_string(),
-                Color32::from_rgb(255, 200, 50),
+                YELLOW_GREEN,
             );
             stat_row(
                 ui,
                 "Complexity Flags",
                 &data.analysis.complexity_flags.len().to_string(),
-                Color32::from_rgb(255, 110, 110),
+                RED,
             );
         });
 
