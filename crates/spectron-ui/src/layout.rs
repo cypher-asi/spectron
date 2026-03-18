@@ -188,7 +188,8 @@ pub struct LayoutState {
 
 impl LayoutState {
     pub fn new(graph: &ArchGraph, width: f32, height: f32) -> Self {
-        let nodes: Vec<NodeIndex> = graph.node_indices().collect();
+        let mut nodes: Vec<NodeIndex> = graph.node_indices().collect();
+        nodes.sort(); // deterministic ordering
         Self::init(nodes, width, height)
     }
 
@@ -198,10 +199,11 @@ impl LayoutState {
         height: f32,
         visible: &HashSet<NodeIndex>,
     ) -> Self {
-        let nodes: Vec<NodeIndex> = graph
+        let mut nodes: Vec<NodeIndex> = graph
             .node_indices()
             .filter(|ni| visible.contains(ni))
             .collect();
+        nodes.sort(); // deterministic ordering
         Self::init(nodes, width, height)
     }
 
@@ -334,14 +336,24 @@ pub fn compute_layout(graph: &ArchGraph, width: f32, height: f32) -> HashMap<Nod
 }
 
 // ---------------------------------------------------------------------------
-// Sugiyama (layered) layout
+// Sugiyama (layered) layout — improved
 // ---------------------------------------------------------------------------
 
-/// Compute a layered (Sugiyama) layout for the visible subset of the graph.
+const BARYCENTER_SWEEPS: usize = 10;
+
+/// Compute a layered (Sugiyama-style) layout for the visible subset of the
+/// graph.
 ///
-/// 1. Layer assignment via longest-path from roots.
-/// 2. Ordering within layers via barycenter heuristic (3 sweeps).
-/// 3. Position assignment with even spacing.
+/// Improvements over the original implementation:
+/// 1. **Cycle-breaking** — DFS identifies back-edges and temporarily reverses
+///    them so Kahn's algorithm can produce a proper topological layer
+///    assignment even when cycles exist.
+/// 2. **Deterministic ordering** — nodes are sorted by `NodeIndex` before
+///    processing so the same graph always yields the same layout.
+/// 3. **More barycenter sweeps** (10 instead of 3) for better crossing
+///    minimisation.
+/// 4. **Stable tie-breaking** — when two nodes have the same barycenter, they
+///    keep their current relative order (preserving determinism across sweeps).
 pub fn compute_layered_layout(
     graph: &ArchGraph,
     width: f32,
@@ -350,81 +362,152 @@ pub fn compute_layered_layout(
 ) -> HashMap<NodeIndex, Vec2> {
     use petgraph::Direction;
 
-    let nodes: Vec<NodeIndex> = graph
+    // Collect visible nodes in deterministic (ascending NodeIndex) order.
+    let mut nodes: Vec<NodeIndex> = graph
         .node_indices()
         .filter(|n| visible.contains(n))
         .collect();
+    nodes.sort();
+
     if nodes.is_empty() {
         return HashMap::new();
     }
 
     let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
 
-    // Layer assignment: topological longest-path from roots.
-    // Roots = nodes with no incoming edges from visible set.
-    let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
+    // ------------------------------------------------------------------
+    // Phase 1: cycle breaking via DFS back-edge detection
+    // ------------------------------------------------------------------
+    // We build an adjacency list restricted to visible nodes, then perform
+    // DFS. Back-edges are "reversed" in a separate set so that the layer
+    // assignment sees a DAG.
+
+    let mut adj: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
     for &n in &nodes {
-        in_degree.insert(n, 0);
+        let mut neighbors: Vec<NodeIndex> = graph
+            .neighbors_directed(n, Direction::Outgoing)
+            .filter(|nb| node_set.contains(nb))
+            .collect();
+        neighbors.sort(); // deterministic traversal
+        adj.insert(n, neighbors);
     }
-    for &n in &nodes {
-        for neighbor in graph.neighbors_directed(n, Direction::Outgoing) {
-            if node_set.contains(&neighbor) {
-                *in_degree.entry(neighbor).or_default() += 1;
-            }
+
+    let mut reversed_edges: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
+    {
+        let mut color: HashMap<NodeIndex, u8> = HashMap::new(); // 0=white, 1=gray, 2=black
+        for &n in &nodes {
+            color.insert(n, 0);
         }
-    }
-
-    let mut layer_of: HashMap<NodeIndex, usize> = HashMap::new();
-    let mut queue: std::collections::VecDeque<NodeIndex> = std::collections::VecDeque::new();
-
-    for &n in &nodes {
-        if in_degree[&n] == 0 {
-            layer_of.insert(n, 0);
-            queue.push_back(n);
-        }
-    }
-
-    // Handle cycles: if no roots found, pick the first node as root.
-    if queue.is_empty() {
-        let root = nodes[0];
-        layer_of.insert(root, 0);
-        queue.push_back(root);
-    }
-
-    while let Some(current) = queue.pop_front() {
-        let current_layer = layer_of[&current];
-        for neighbor in graph.neighbors_directed(current, Direction::Outgoing) {
-            if !node_set.contains(&neighbor) {
+        let mut stack: Vec<(NodeIndex, usize)> = Vec::new();
+        for &root in &nodes {
+            if color[&root] != 0 {
                 continue;
             }
-            let new_layer = current_layer + 1;
-            let existing = layer_of.get(&neighbor).copied().unwrap_or(0);
-            if new_layer > existing || !layer_of.contains_key(&neighbor) {
-                let was_new = !layer_of.contains_key(&neighbor);
-                layer_of.insert(neighbor, new_layer);
-                if was_new {
-                    queue.push_back(neighbor);
+            stack.push((root, 0));
+            color.insert(root, 1);
+            while let Some((node, idx)) = stack.last_mut() {
+                let neighbors = &adj[node];
+                if *idx < neighbors.len() {
+                    let nb = neighbors[*idx];
+                    *idx += 1;
+                    match color[&nb] {
+                        0 => {
+                            color.insert(nb, 1);
+                            stack.push((nb, 0));
+                        }
+                        1 => {
+                            // Back-edge — mark for reversal.
+                            reversed_edges.insert((*node, nb));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    color.insert(*node, 2);
+                    stack.pop();
                 }
             }
         }
     }
 
-    // Assign unvisited nodes (from cycles) to layer 0.
+    // ------------------------------------------------------------------
+    // Phase 2: topological layer assignment (Kahn's on the virtual DAG)
+    // ------------------------------------------------------------------
+
+    let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
+    for &n in &nodes {
+        in_degree.insert(n, 0);
+    }
+    for &n in &nodes {
+        for &nb in &adj[&n] {
+            if reversed_edges.contains(&(n, nb)) {
+                // Reversed edge: treat as nb -> n for layering.
+                *in_degree.entry(n).or_default() += 1;
+            } else {
+                *in_degree.entry(nb).or_default() += 1;
+            }
+        }
+    }
+
+    // Priority queue ensures deterministic ordering among equal-degree nodes.
+    let mut queue: std::collections::BinaryHeap<std::cmp::Reverse<NodeIndex>> =
+        std::collections::BinaryHeap::new();
+    for &n in &nodes {
+        if in_degree[&n] == 0 {
+            queue.push(std::cmp::Reverse(n));
+        }
+    }
+
+    let mut layer_of: HashMap<NodeIndex, usize> = HashMap::new();
+    while let Some(std::cmp::Reverse(current)) = queue.pop() {
+        let current_layer = layer_of.get(&current).copied().unwrap_or(0);
+        for &nb in &adj[&current] {
+            let (src, tgt) = if reversed_edges.contains(&(current, nb)) {
+                (nb, current) // virtual direction
+            } else {
+                (current, nb)
+            };
+            if src == current {
+                let new_layer = current_layer + 1;
+                let entry = layer_of.entry(tgt).or_insert(0);
+                if new_layer > *entry {
+                    *entry = new_layer;
+                }
+                let deg = in_degree.get_mut(&tgt).unwrap();
+                *deg = deg.saturating_sub(1);
+                if *deg == 0 {
+                    queue.push(std::cmp::Reverse(tgt));
+                }
+            }
+        }
+        layer_of.entry(current).or_insert(current_layer);
+    }
+
+    // Safety net: assign any remaining unvisited nodes (shouldn't happen
+    // with correct cycle-breaking, but be defensive).
     for &n in &nodes {
         layer_of.entry(n).or_insert(0);
     }
 
-    let max_layer = layer_of.values().copied().max().unwrap_or(0);
+    // ------------------------------------------------------------------
+    // Phase 3: build layer vectors
+    // ------------------------------------------------------------------
 
-    // Build layers.
+    let max_layer = layer_of.values().copied().max().unwrap_or(0);
     let mut layers: Vec<Vec<NodeIndex>> = vec![Vec::new(); max_layer + 1];
     for &n in &nodes {
         layers[layer_of[&n]].push(n);
     }
+    // Deterministic initial order within each layer.
+    for layer in &mut layers {
+        layer.sort();
+    }
 
-    // Barycenter ordering (3 sweeps).
-    for _sweep in 0..3 {
-        // Forward sweep
+    // ------------------------------------------------------------------
+    // Phase 4: barycenter ordering (10 forward+backward sweeps)
+    // ------------------------------------------------------------------
+
+    for _sweep in 0..BARYCENTER_SWEEPS {
+        // Forward sweep (top → bottom)
         for l in 1..layers.len() {
             let prev_positions: HashMap<NodeIndex, f32> = layers[l - 1]
                 .iter()
@@ -432,9 +515,10 @@ pub fn compute_layered_layout(
                 .map(|(i, &n)| (n, i as f32))
                 .collect();
 
-            let mut barycenters: Vec<(NodeIndex, f32)> = layers[l]
+            let mut indexed: Vec<(usize, NodeIndex, f32)> = layers[l]
                 .iter()
-                .map(|&n| {
+                .enumerate()
+                .map(|(orig_idx, &n)| {
                     let mut sum = 0.0_f32;
                     let mut count = 0_u32;
                     for neighbor in graph.neighbors_directed(n, Direction::Incoming) {
@@ -443,15 +527,19 @@ pub fn compute_layered_layout(
                             count += 1;
                         }
                     }
-                    let bc = if count > 0 { sum / count as f32 } else { f32::MAX };
-                    (n, bc)
+                    let bc = if count > 0 { sum / count as f32 } else { orig_idx as f32 };
+                    (orig_idx, n, bc)
                 })
                 .collect();
-            barycenters.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            layers[l] = barycenters.into_iter().map(|(n, _)| n).collect();
+            indexed.sort_by(|a, b| {
+                a.2.partial_cmp(&b.2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.0.cmp(&b.0)) // stable tie-break
+            });
+            layers[l] = indexed.into_iter().map(|(_, n, _)| n).collect();
         }
 
-        // Backward sweep
+        // Backward sweep (bottom → top)
         for l in (0..layers.len().saturating_sub(1)).rev() {
             let next_positions: HashMap<NodeIndex, f32> = layers[l + 1]
                 .iter()
@@ -459,9 +547,10 @@ pub fn compute_layered_layout(
                 .map(|(i, &n)| (n, i as f32))
                 .collect();
 
-            let mut barycenters: Vec<(NodeIndex, f32)> = layers[l]
+            let mut indexed: Vec<(usize, NodeIndex, f32)> = layers[l]
                 .iter()
-                .map(|&n| {
+                .enumerate()
+                .map(|(orig_idx, &n)| {
                     let mut sum = 0.0_f32;
                     let mut count = 0_u32;
                     for neighbor in graph.neighbors_directed(n, Direction::Outgoing) {
@@ -470,16 +559,23 @@ pub fn compute_layered_layout(
                             count += 1;
                         }
                     }
-                    let bc = if count > 0 { sum / count as f32 } else { f32::MAX };
-                    (n, bc)
+                    let bc = if count > 0 { sum / count as f32 } else { orig_idx as f32 };
+                    (orig_idx, n, bc)
                 })
                 .collect();
-            barycenters.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            layers[l] = barycenters.into_iter().map(|(n, _)| n).collect();
+            indexed.sort_by(|a, b| {
+                a.2.partial_cmp(&b.2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.0.cmp(&b.0))
+            });
+            layers[l] = indexed.into_iter().map(|(_, n, _)| n).collect();
         }
     }
 
-    // Position assignment with generous spacing.
+    // ------------------------------------------------------------------
+    // Phase 5: position assignment
+    // ------------------------------------------------------------------
+
     let num_layers = layers.len().max(1);
     let margin_x = width * 0.06;
     let margin_y = height * 0.06;
