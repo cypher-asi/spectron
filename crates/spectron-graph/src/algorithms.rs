@@ -342,6 +342,52 @@ pub fn degree_centrality(graph: &ArchGraph) -> HashMap<NodeIndex, usize> {
 }
 
 // ---------------------------------------------------------------------------
+// extract_module_subgraph
+// ---------------------------------------------------------------------------
+
+/// Extract a subgraph containing only `Module` and `Crate` nodes with
+/// `Imports` and `DependsOn` edges.
+///
+/// This is the appropriate input for structural / architectural analyses
+/// such as cycle detection and layer-violation checking, since it strips
+/// away the fine-grained symbol and file nodes.
+pub fn extract_module_subgraph(graph: &ArchGraph) -> ArchGraph {
+    use spectron_core::{GraphEdge, GraphNode, RelationshipKind};
+
+    let mut subgraph = ArchGraph::new();
+    let mut index_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+
+    for node_idx in graph.node_indices() {
+        match &graph[node_idx] {
+            GraphNode::Module(_) | GraphNode::Crate(_) => {
+                let new_idx = subgraph.add_node(graph[node_idx].clone());
+                index_map.insert(node_idx, new_idx);
+            }
+            _ => {}
+        }
+    }
+
+    for edge_ref in graph.edge_references() {
+        let kind = &edge_ref.weight().kind;
+        if !matches!(kind, RelationshipKind::Imports | RelationshipKind::DependsOn) {
+            continue;
+        }
+        if let (Some(&new_src), Some(&new_tgt)) = (
+            index_map.get(&edge_ref.source()),
+            index_map.get(&edge_ref.target()),
+        ) {
+            subgraph.add_edge(
+                new_src,
+                new_tgt,
+                GraphEdge::new(kind.clone(), edge_ref.weight().weight),
+            );
+        }
+    }
+
+    subgraph
+}
+
+// ---------------------------------------------------------------------------
 // DataFlowInfo
 // ---------------------------------------------------------------------------
 
@@ -683,6 +729,53 @@ mod tests {
 
         let order = topological_sort(&graph).expect("isolated nodes form a DAG");
         assert_eq!(order.len(), 3);
+    }
+
+    // -------------------------------------------------------------------
+    // extract_module_subgraph tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn extract_module_subgraph_filters_correctly() {
+        use spectron_core::{CrateId, FileId, ModuleId};
+
+        let mut graph = ArchGraph::new();
+        let crate_n = graph.add_node(GraphNode::Crate(CrateId(0)));
+        let mod_a = graph.add_node(GraphNode::Module(ModuleId(1)));
+        let mod_b = graph.add_node(GraphNode::Module(ModuleId(2)));
+        let file_n = graph.add_node(GraphNode::File(FileId(0)));
+        let sym_n = graph.add_node(GraphNode::Symbol(SymbolId(0)));
+
+        graph.add_edge(crate_n, mod_a, GraphEdge::new(RelationshipKind::Contains, 2.0));
+        graph.add_edge(mod_a, mod_b, GraphEdge::new(RelationshipKind::Imports, 1.0));
+        graph.add_edge(crate_n, mod_b, GraphEdge::new(RelationshipKind::DependsOn, 1.0));
+        graph.add_edge(mod_a, sym_n, GraphEdge::new(RelationshipKind::Contains, 2.0));
+        graph.add_edge(sym_n, file_n, GraphEdge::new(RelationshipKind::References, 1.0));
+
+        let sub = extract_module_subgraph(&graph);
+
+        assert_eq!(sub.node_count(), 3, "crate + 2 modules");
+        assert_eq!(sub.edge_count(), 2, "Imports + DependsOn only");
+    }
+
+    #[test]
+    fn extract_module_subgraph_empty_graph() {
+        let graph = ArchGraph::new();
+        let sub = extract_module_subgraph(&graph);
+        assert_eq!(sub.node_count(), 0);
+        assert_eq!(sub.edge_count(), 0);
+    }
+
+    #[test]
+    fn extract_module_subgraph_symbols_only() {
+        let mut graph = ArchGraph::new();
+        let a = graph.add_node(GraphNode::Symbol(SymbolId(0)));
+        let b = graph.add_node(GraphNode::Symbol(SymbolId(1)));
+        graph.add_edge(a, b, GraphEdge::new(RelationshipKind::Calls, 1.0));
+
+        let sub = extract_module_subgraph(&graph);
+        assert_eq!(sub.node_count(), 0, "no modules or crates");
+        assert_eq!(sub.edge_count(), 0);
     }
 
     // -------------------------------------------------------------------
