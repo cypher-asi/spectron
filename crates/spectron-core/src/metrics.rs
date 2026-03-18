@@ -71,7 +71,7 @@ impl SymbolMetrics {
 // ---------------------------------------------------------------------------
 
 /// Quantitative metrics for a single module.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModuleMetrics {
     /// The module these metrics apply to.
     pub module_id: ModuleId,
@@ -83,10 +83,24 @@ pub struct ModuleMetrics {
     pub fan_in: u32,
     /// Fan-out: number of other modules this module depends on.
     pub fan_out: u32,
+    /// Instability index: `fan_out / (fan_in + fan_out)`. Ranges from 0.0
+    /// (maximally stable) to 1.0 (maximally unstable).
+    pub instability: Option<f32>,
+    /// Cohesion score: `internal_references / total_references`. Higher is
+    /// more cohesive.
+    pub cohesion: Option<f32>,
+    /// Coupling score: `fan_in + fan_out`. Higher means more coupled.
+    pub coupling_score: Option<f32>,
+    /// API surface ratio: `public_symbols / total_symbols`. Values above 0.8
+    /// may indicate an overly broad public interface.
+    pub api_surface_ratio: Option<f32>,
 }
 
 impl ModuleMetrics {
-    /// Create a new `ModuleMetrics`.
+    /// Create a new `ModuleMetrics` with basic counts. Architectural metrics
+    /// (`instability`, `cohesion`, `coupling_score`, `api_surface_ratio`) are
+    /// initialized to `None` and can be populated later via
+    /// [`with_architecture_metrics`](Self::with_architecture_metrics).
     pub fn new(
         module_id: ModuleId,
         symbol_count: u32,
@@ -100,7 +114,27 @@ impl ModuleMetrics {
             line_count,
             fan_in,
             fan_out,
+            instability: None,
+            cohesion: None,
+            coupling_score: None,
+            api_surface_ratio: None,
         }
+    }
+
+    /// Populate the architectural metrics derived from fan-in/fan-out and
+    /// symbol visibility data.
+    pub fn with_architecture_metrics(
+        mut self,
+        instability: f32,
+        cohesion: f32,
+        coupling_score: f32,
+        api_surface_ratio: f32,
+    ) -> Self {
+        self.instability = Some(instability);
+        self.cohesion = Some(cohesion);
+        self.coupling_score = Some(coupling_score);
+        self.api_surface_ratio = Some(api_surface_ratio);
+        self
     }
 }
 
@@ -145,6 +179,20 @@ mod tests {
         assert_eq!(m.line_count, 200);
         assert_eq!(m.fan_in, 4);
         assert_eq!(m.fan_out, 6);
+        assert_eq!(m.instability, None);
+        assert_eq!(m.cohesion, None);
+        assert_eq!(m.coupling_score, None);
+        assert_eq!(m.api_surface_ratio, None);
+    }
+
+    #[test]
+    fn module_metrics_with_architecture() {
+        let m = ModuleMetrics::new(ModuleId(3), 15, 200, 4, 6)
+            .with_architecture_metrics(0.6, 0.8, 10.0, 0.5);
+        assert_eq!(m.instability, Some(0.6));
+        assert_eq!(m.cohesion, Some(0.8));
+        assert_eq!(m.coupling_score, Some(10.0));
+        assert_eq!(m.api_surface_ratio, Some(0.5));
     }
 
     #[test]
